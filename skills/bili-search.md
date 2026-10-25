@@ -18,7 +18,7 @@ sign: true
 - `order` 可选：`pubdate`(最新) / `click`(播放量) / `dm`(弹幕) / `stow`(收藏) / `scores` / `totalrank`(综合)。
 - 结果在 `data.result[]`，每行有 `bvid` / `aid` / `title`（**带 `<em>` 高亮标签，用前先剥掉**）/ `play` / `danmaku` / `reply` / `pubdate` / `ctime` / `duration` / `owner.name` / `description`。
 - ⚠️ 时间戳全是**秒**。近 N 天就自己按 `pubdate >= 现在秒数 - N*86400` 筛，别指望接口只回新的。
-- 翻页用 `page`；`num` 只要 10 条就取第一页前 10 行，别多翻（每翻一页都是钱）。
+- 翻页用 `page`；分页的参数名是 **`page_size`** —— 写成 `ps` 会被**静默忽略**、照样回 20 条（本机就这么白拿过一页；`/x/space/wbi/arc/search` 那边才是 `ps`）。`num` 只要 10 条就取第一页前 10 行，别多翻（每翻一页都是钱）。
 
 ## 判"值不值得"的次序（省 token 的关键）
 
@@ -48,13 +48,13 @@ sign: true
 ```
 
 - 结果在 `data.list.vlist[]`：`bvid` / `aid` / `title` / `author` / `mid` / `created`（**秒**）/ `length`（`"mm:ss"` 字符串）/ `play` / `comment` / `review` / `description`。
-- `data.page.count` 是总数（决定要不要翻页）；`data.is_risk` 为 `true` = 这一页被风控 ⇒ 慢一点再来，**别连着轰**（越轰越严）。
-- 这只**必须签名**（`sign:true`）：不签常回 `-412` 或直接给空列表。
+- `data.page.count` 是总数（决定要不要翻页）。`data.is_risk` / `gaia_res_type` / `gaia_data` 是这类端点**自带的风控旗标**：`is_risk:true`、`gaia_res_type` 非 0、`gaia_data` 非空都说明这一页被拦过 ⇒ 歇会儿再来，**别连着轰**（越轰越严）。注意 `is_risk:true` **不会**触发底座的自动重试（只有 `-412` / `-352` / 只回 `v_voucher` 才会），所以看见它就该停手，而不是再打一次。
+- 签名（`sign:true`）更稳，但**不签也通**：本机 2026-10-26 实测，不带签名、甚至 cookie 里连 `buvid3` 都不带，照样回了完整列表且 `is_risk:false`。别为了「更像浏览器」绕路，也别把 `-412` 直接归因到没签名上。
 - 顺手查这个人本身：`GET /x/web-interface/card  params:{ctr:<UID>}`（**不用**签名）→ `data.card.name / sign / level / fans`。
 - 典型链条：`bili_auth {action:"uid", name:"昵称"}` 换 UID → 本端点取他的投稿 → `/x/web-interface/view` 逐条核实 → 落账。
 
 ## 端点不通时的换法
 
-- 回 `code:-412` / `验证码`类 → 风控：先 `bili_auth {action:"status"}` 看有没有 `buvid3`；补凭证后重试一次，**别循环重试轰炸**。
+- 回 `code:-412` / `-352`、或 `code:0` 却只回 `v_voucher` ⇒ 底座**已经**会自动现取 spi、上报一次指纹、再原样重试一次（只一次，日志写「撞风控…重试」）。重试还不通就是真风控：歇够再来，**别循环轰炸**，也别再指望「补 buvid3」能救 —— 本机实测不带 buvid 也能通。
 - `/x/web-interface/wbi/search/type` 不行就试 `/x/web-interface/search/type`（同一套参数，不带 wbi 前缀）。
 - 都不行 → 退到不需要签名的入口：`/x/web-interface/popular`（综合热门）、`/x/web-interface/ranking/v2?rid=0&type=all`（排行榜）、`/x/series/recArchivesByKeywords?keywords=<词>`（相关合集）。这些**不看关键词时间线**，只能当兜底，并在回报里说明用的是哪条。

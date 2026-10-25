@@ -189,6 +189,7 @@ const cmBody = (await a.providers[0].get({ name: 'bili-comment' })).content
 ok('评论说明书正文锁着两条实测口径：Referer 不带尾斜杠 + Gaia 默认关（gaia: true 才开）', /Referer/.test(cmBody) && /尾斜杠/.test(cmBody) && /gaia: true/.test(cmBody) && !/不做上报就会被 AI 审核降级/.test(cmBody), cmBody.slice(-260))
 const got = await a.providers[0].get({ name: 'bili-search' })
 ok('get() 去掉 frontmatter、追加底座脚注（版本/记忆位置/缓存边界）', !got.content.startsWith('---') && got.content.includes('## 本插件的底座') && got.content.includes('记忆在这儿'))
+ok('搜索说明书按本机实测改口：wbi 签名不是硬性必须（不签也通）、分页要用 page_size（ps 被忽略）、并写明 is_risk 类风控旗标', !/不签常回/.test(got.content) && /不签也通/.test(got.content) && /page_size/.test(got.content) && /静默忽略/.test(got.content) && /is_risk/.test(got.content), got.content.slice(0, 150))
 const pv = JSON.parse(fs.readFileSync(path.join(pkgDir, 'package.json'), 'utf8')).version
 ok('脚注里的版本是现读磁盘的那份（不是模块加载时冻住的）', got.content.includes('dsh-bili-base v' + pv), got.content.slice(-120))
 ok('凭证那行只声明文件在不在，登录要现查', got.content.includes('这行只说明文件存在') || got.content.includes('不在 ——'))
