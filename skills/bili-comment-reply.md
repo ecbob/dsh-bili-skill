@@ -58,7 +58,8 @@ bili_ledger {action:"append", table:"comment", key:"rpid",
 
 复核动作与结果都必须写进行：**查不到就写「没查到」，被删就写「已被删」（`12022` 就是硬证据），绝不写"没发出去"。**
 
-## 回复也吃同一个 Gaia 指纹上报
+## 回复与评论吃同一套形状要求（关键是 Referer，不是上报）
 
-回复走的是同一个 `reply/add`，所以 `bili-comment` 里那条结论对回复同样成立：**`Referer` 必须写成 `https://www.bilibili.com`（不带尾斜杠）**，带斜杠会被判 `state:17 attr:6422528`。Gaia 上报底座已自动化，但它不是这次降级的决定因素（逐变量隔离过）。
-base 已自动处理，不用你手动拼。另外回执里的 `state` 与 `attr` **不能当结论用**（本机实测：刚发时回执都是 `state:0`，读回来才知道是 17）——判在不在一律按上面那节用 `reply/reply?root=<顶层rpid>` 读。
+回复走的是同一个 `reply/add`，所以 `bili-comment` 里那条硬口径对回复一样成立：**`Referer` 必须是 `https://www.bilibili.com`（不带尾斜杠）**，带斜杠会被判 `state:17 attr:6422528`。Gaia 指纹上报**默认关着**（本机 2×2 实测：上报开 / 关对降级没有差别，只有 Referer 起作用），开着也没测出收益；base 都处理好了，不用你手动拼。
+
+回执里的 `state` / `attr` **不能当结论**（带斜杠那阵子是：回执 `state:0`、读回来才知道 17）——在不在一律按上面那节用 `reply/reply?root=<顶层rpid>` 读回来判。
