@@ -35,13 +35,18 @@ const mkCtx = () => {
 const hits = []
 const SPI_B3 = 'AAAAAAAA-BBBB-CCCC-DDDD-EEEEEEEEEEEE12345infoc'
 const SPI_B4 = 'AAAAAAAA-BBBB-CCCC-DDDD-EEEEEEEEEEEE-123456789-abcdefghijklmnopqrstuvwxyz0123456789ABCD='
+let risk = null   // 形如 { left: 1, code: -412 } 或 { left: 1, voucher: true }：让业务端点前 left 次回风控样子
 globalThis.fetch = async (url, init = {}) => {
   const u = String(url)
   hits.push({ url: u, method: (init.method || 'GET'), headers: { ...(init.headers || {}) }, body: init.body ? String(init.body) : '' })
   let data = { isLogin: true, mid: 443924958, uname: 'tester', wbi_img: { img_url: 'https://i0.hdslb.com/bfs/wbi/7cd08494133a4351bb2a2cb38190f56f.png', sub_url: 'https://i0.hdslb.com/bfs/wbi/4932caf07c6049e4b7e523aa1db8ea06.png' } }
+  let code = 0
   if (u.includes('/x/frontend/finger/spi')) data = { b_3: SPI_B3, b_4: SPI_B4 }
-  else if (u.includes('/x/v2/reply/add')) data = { rpid: 999, rpid_str: '999', success_toast: '发送成功' }
-  const body = JSON.stringify({ code: 0, message: 'OK', data })
+  else if (u.includes('/x/v2/reply/add')) {
+    data = { rpid: 999, rpid_str: '999', success_toast: '发送成功' }
+    if (risk && risk.left > 0) { risk.left--; if (risk.voucher) { data = { v_voucher: 'voucher-abc' } } else { code = risk.code ?? -412; data = null } }
+  }
+  const body = JSON.stringify({ code, message: code === 0 ? 'OK' : '请求失败，请稍后再试', data })
   return { status: 200, ok: true, headers: { get: () => 'application/json' }, text: async () => body, json: async () => JSON.parse(body) }
 }
 
@@ -236,6 +241,40 @@ let threw = false; try { await a.tools.find((t) => t.name === 'bili_auth').execu
 ok('poll 不给 key 就明确报错（不闷声发请求）', threw)
 const st = await a.tools.find((t) => t.name === 'bili_auth').execute({ action: 'status' })
 ok('bili_auth status 走假 fetch 认成已登录', st.ok === true && st.loggedIn === true && st.uid === '443924958', JSON.stringify(st))
+
+/* ── 16. 撞风控时自动现取 spi 上报并重试一次（gaia 默认关着也要能自愈）── */
+const tagOf = (u) => (u.includes('finger/spi') ? 'spi' : u.includes('gaia-gateway') ? 'gaia' : u.includes('reply/add') ? 'add' : 'other')
+async function riskCase(homeName, plan, extraCfg) {
+  risk = plan
+  const c = mkCtx(); mod.apply(c.ctx, { home: path.join(tmp, homeName), logLevel: 'info', ...(extraCfg || {}) })
+  hits.length = 0
+  const out = await c.tools.find((t) => t.name === 'bili_api').execute({ path: '/x/v2/reply/add', method: 'POST', body: { oid: 1 } })
+  const seq = hits.map((h) => tagOf(h.url)).join(',')
+  const logged = fs.existsSync(path.join(tmp, homeName, 'base.log')) ? fs.readFileSync(path.join(tmp, homeName, 'base.log'), 'utf8') : ''
+  risk = null
+  return { seq, out, logged }
+}
+{
+  const { seq, out, logged } = await riskCase('risk412', { left: 1, code: -412 })
+  ok('撞 -412：先原样打，撞了就 spi→上报→原样重试一次，最后成功', seq === 'add,spi,gaia,add' && out.ok === true, seq + ' | ok=' + out.ok)
+  ok('撞风控重试要在日志里说清楚（不静默多发请求）', /撞风控.*-412.*重试/.test(logged), logged.split(/\r?\n/).filter((l) => l.includes('撞风控')).join(' § ').slice(0, 180))
+}
+{
+  const { seq, out } = await riskCase('riskvoucher', { left: 1, voucher: true })
+  ok('code:0 但只回 v_voucher 也算撞风控，同样自愈一次', seq === 'add,spi,gaia,add' && out.ok === true, seq + ' | ok=' + out.ok)
+}
+{
+  const { seq, out } = await riskCase('riskagain', { left: 2, code: -352 })
+  ok('重试还撞就不再重试、也不再上报（只一次，绝不循环），并如实把失败回出来', seq === 'add,spi,gaia,add' && out.ok === false && out.code === -352, seq + ' | ok=' + out.ok + ' code=' + out.code)
+}
+{
+  const { seq } = await riskCase('riskon', { left: 1, code: -412 }, { gaia: true })
+  ok('gaia 开着时先预上报；撞风控后 force 绕过 12 小时缓存重新取 spi 再重试', seq === 'spi,gaia,add,spi,gaia,add', seq)
+}
+{
+  const { seq } = await riskCase('cleanPOST', null)
+  ok('没撞风控的 POST 一个多余请求都不发（默认 gaia 关 = 真的一次都不上报）', seq === 'add', seq)
+}
 
 try { fs.rmSync(tmp, { recursive: true, force: true }) } catch { /* 收尾删不掉就算了 */ }
 console.log(`\ndsh-bili-base 离线自检：${pass} 项通过${fail ? `，${fail} 项失败` : ''}${skipped ? `，${skipped} 项跳过` : ''}`)

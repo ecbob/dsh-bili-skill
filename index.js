@@ -296,7 +296,8 @@ export function apply(ctx, config = {}) {
   const withGaiaBuvid = (c) => (gaia?.buvid3 ? { ...c, buvid3: gaia.buvid3, buvid4: gaia.buvid4 || c?.buvid4 } : c)
   let gaiaInflight = null
   async function ensureGaia(force = false) {
-    if (!cfg.gaia) return { ok: false, why: '配置里 gaia 是关的' }
+    // force=true 是「撞风控后的自愈上报」：就算 cfg.gaia 关着也要做 —— 默认关是为了省两次往返，不是禁止上报。
+    if (!cfg.gaia && !force) return { ok: false, why: '配置里 gaia 是关的' }
     let tpl = ''
     try { tpl = fs.readFileSync(gaiaTplFile, 'utf8') } catch { log('⚠️ 缺 gaia/payload-template.txt，跳过指纹上报（评论容易被 AI 审核降级）'); return { ok: false, why: '没有指纹模板' } }
     if (!force && gaia?.ok && Date.now() - Number(gaia.at || 0) < 12 * 3600_000) return { ok: true, cached: true }
@@ -385,10 +386,21 @@ export function apply(ctx, config = {}) {
     return p
   }
 
-  async function call({ path: p, method = 'GET', params = {}, body = null, sign = false, headers = null, cookies = null } = {}) {
+  // 风控自愈：B站 的硬风控长三种样子 —— code -412（前置校验不过）、code -352（滑块/风控拦截）、
+  // 或 code:0 但 data 里只有一个 v_voucher（验证挑战；本机就被"签名搜索只回 voucher"坑过一次）。
+  // 撞上就现取 spi → 上报一次指纹 → 原样重试一次；**只重试一次**：连着撞还猛发只会把号送进风控。
+  const isRisk = (u) => {
+    if (!u) return false
+    if (u.code === -412 || u.code === -352) return true
+    const d = u.data
+    return !!d && typeof d === 'object' && !Array.isArray(d) && typeof d.v_voucher === 'string' && !!d.v_voucher
+  }
+
+  async function call(args = {}) {
+    const { path: p, method = 'GET', params = {}, body = null, sign = false, headers = null, cookies = null, riskRetried = false } = args
     if (method === 'POST' && cfg.gaia) { try { await ensureGaia() } catch { /* 上报失败也别拦业务请求 */ } }
     let q = { ...params }
-    if (sign) { try { q = await signWbi(q) } catch (e) { log(`wbi 签名失败，改成不签继续：${String(e?.message || e).slice(0, 160)}`) } }
+    if (sign) { try { q = await signWbi(q) } catch (err) { log(`wbi 签名失败，改成不签继续：${String(err?.message || err).slice(0, 160)}`) } }
     // 相对路径 = api.bilibili.com 下；也允许直接给 https://<某子域>.bilibili.com/... 的整条 URL
     const rel0 = String(p || '').trim()
     const rel = rel0.startsWith('//') ? 'https:' + rel0 : rel0   // B站 返回的资源地址常常是 //host/path 这种协议相对址
@@ -398,6 +410,14 @@ export function apply(ctx, config = {}) {
     if (r.json == null) return { ok: false, code: r.status, message: `不是 JSON 响应（content-type=${r.ct || '未知'}）${r.raw ? `：${String(r.raw).slice(0, 200)}` : ''}`, data: null }
     const u = __unwrapResponse(r.json, r.status)
     if (!u.ok && u.code === -403) { mixinCache = { key: '', at: 0 }; note('回 -403 ⇒ mixin key 作废，下次重签') }
+    if (!riskRetried && isRisk(u)) {
+      const why = u.code === -412 ? '-412 前置校验不过' : u.code === -352 ? '-352 风控拦截' : '只回了 v_voucher（验证挑战）'
+      let done = null
+      try { done = await ensureGaia(true) } catch (err) { done = { ok: false, why: String(err?.message || err).slice(0, 120) } }
+      if (!done?.ok) { log(`撞风控（${why}）但指纹上报没成功（${done?.why || '未知'}），不重试，把原样结果回给你`); return u }
+      log(`撞风控（${why}）⇒ 已现取 spi 上报一次，原样重试一次（只试这一次，不循环）`)
+      return await call({ ...args, riskRetried: true })
+    }
     return u
   }
 
