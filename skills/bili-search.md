@@ -1,0 +1,60 @@
+---
+name: bili-search
+description: 按关键词在 B站 搜索并筛选视频：用哪个端点、时间戳口径、怎么判值不值得、结果怎么落账。
+whenToUse: 要按关键词找/刷 B站 视频、或把一堆搜索结果筛成候选时。
+---
+
+## 只走 bili_api，别猜
+
+1. `bili_auth {action:"status"}` —— 先确认有凭证；没有就 `start` + `poll` 扫一次码（没登录也能搜，但结果与翻页会差）。
+2. 搜索（**必须 `sign:true`**，这类端点要 WBI 签名）：
+
+```
+GET /x/web-interface/wbi/search/type
+params: {search_type:"video", keyword:"<词>", page:1, page_size:20, order:"pubdate"}
+sign: true
+```
+
+- `order` 可选：`pubdate`(最新) / `click`(播放量) / `dm`(弹幕) / `stow`(收藏) / `scores` / `totalrank`(综合)。
+- 结果在 `data.result[]`，每行有 `bvid` / `aid` / `title`（**带 `<em>` 高亮标签，用前先剥掉**）/ `play` / `danmaku` / `reply` / `pubdate` / `ctime` / `duration` / `owner.name` / `description`。
+- ⚠️ 时间戳全是**秒**。近 N 天就自己按 `pubdate >= 现在秒数 - N*86400` 筛，别指望接口只回新的。
+- 翻页用 `page`；`num` 只要 10 条就取第一页前 10 行，别多翻（每翻一页都是钱）。
+
+## 判"值不值得"的次序（省 token 的关键）
+
+1. `GET /x/web-interface/view  params:{bvid}` —— 这条**不要**签名，且信息最全：`title` / `desc` / `stat.view|reply|danmaku|coin|favorite|share` / `duration` / `pubdate` / `owner` / `videos`（分 P 数）/ `cid`。
+2. 只有还想不通的才去读材料：字幕（见 `bili-watch-frames` 后面的字幕端点）或画面帧。**别看评论来判断内容**（评论是风向，不是内容）。
+3. 默认筛除口径（使用者可改本文件）：
+   - 播放 < 30 **且** 评论 < 3 的新投稿 → 除非标题正中使用者明确关注的点，否则跳；
+   - 纯 BGM / 简介自标"无旁白"的 → 跳（没有可判断的文本）；
+   - 同题材教程一次出现 5~6 条 → 只留信息增量最大那条，其余记跳过；
+   - 拿不准 = **记跳过**，不要反复权衡（同一次会话里反复权衡最费 token）。
+
+## 记完要落账
+
+```
+bili_ledger {action:"append", table:"seen", key:"bvid", rows:[{bvid,title,up,play,verdict:"挑了"|"跳过",reason}]}
+```
+`key:"bvid"` 会自动跳过已有行 ⇒ 想重判同一条就先 `delete`。开刷之前先 `bili_ledger {action:"read", table:"seen", limit:200}`，**已经记过的 bvid 不再重复挑**。
+
+## 直接按 UID 取某个人的投稿（本机已实测通）
+
+不想绕关键词，就用人的 UID 直接拿他发了什么：
+
+```
+GET /x/space/wbi/arc/search
+params: {mid:<UID>, pn:1, ps:10, order:"pubdate", sub_order:0, tid:0}
+sign: true
+```
+
+- 结果在 `data.list.vlist[]`：`bvid` / `aid` / `title` / `author` / `mid` / `created`（**秒**）/ `length`（`"mm:ss"` 字符串）/ `play` / `comment` / `review` / `description`。
+- `data.page.count` 是总数（决定要不要翻页）；`data.is_risk` 为 `true` = 这一页被风控 ⇒ 慢一点再来，**别连着轰**（越轰越严）。
+- 这只**必须签名**（`sign:true`）：不签常回 `-412` 或直接给空列表。
+- 顺手查这个人本身：`GET /x/web-interface/card  params:{ctr:<UID>}`（**不用**签名）→ `data.card.name / sign / level / fans`。
+- 典型链条：`bili_auth {action:"uid", name:"昵称"}` 换 UID → 本端点取他的投稿 → `/x/web-interface/view` 逐条核实 → 落账。
+
+## 端点不通时的换法
+
+- 回 `code:-412` / `验证码`类 → 风控：先 `bili_auth {action:"status"}` 看有没有 `buvid3`；补凭证后重试一次，**别循环重试轰炸**。
+- `/x/web-interface/wbi/search/type` 不行就试 `/x/web-interface/search/type`（同一套参数，不带 wbi 前缀）。
+- 都不行 → 退到不需要签名的入口：`/x/web-interface/popular`（综合热门）、`/x/web-interface/ranking/v2?rid=0&type=all`（排行榜）、`/x/series/recArchivesByKeywords?keywords=<词>`（相关合集）。这些**不看关键词时间线**，只能当兜底，并在回报里说明用的是哪条。
