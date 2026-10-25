@@ -178,6 +178,7 @@ ok('每份的 frontmatter name 与文件名一致且是 kebab-case', cl.every((c
 const rg = cl.find((c) => c.name === 'bili-comment-reply')
 const rgBody = rg ? (await a.providers[0].get(rg)).content : ''
 ok('回复说明书在目录里，正文含 root/parent、dialog、12022、reply/reply 读法', !!rg && ['12022', 'dialog', 'reply/reply', 'root'].every((k) => rgBody.includes(k)), rgBody.slice(0, 60))
+ok('回复说明书不再把 state:17 写成常态（要说清是带斜杠时代的现象，修好后复测 state 0 attr 0）', /318196566817/.test(rgBody) && /带斜杠那阵子/.test(rgBody) && !/刚发的两条都是 \*\*`state:17`\*\*/.test(rgBody), rgBody.slice(0, 120))
 const cmBody = (await a.providers[0].get({ name: 'bili-comment' })).content
 ok('评论说明书正文锁着两条实测口径：Referer 不带尾斜杠 + Gaia 默认关（gaia: true 才开）', /Referer/.test(cmBody) && /尾斜杠/.test(cmBody) && /gaia: true/.test(cmBody) && !/不做上报就会被 AI 审核降级/.test(cmBody), cmBody.slice(-260))
 const got = await a.providers[0].get({ name: 'bili-search' })
