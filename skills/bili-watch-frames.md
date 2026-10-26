@@ -24,6 +24,7 @@ bili_shot {bvid, num?, at?:[秒,…], p?:第几P}
 - 返回值里要看这几样，别说错口径：`grid`（`cols x rows`、`tileW x tileH`、拼图张数）、`intervalSec`（**每格多少秒**）、`intervalBasis`（这个秒数是凭什么定的）、`partIndex/partDuration/partStart`、以及每帧的 `{at, atTo, tile, path, bytes, width, height}`。
 - 本机实测的格子语义（2026-10-26，BV1VpjW6YE4o 四个 P 逐个验过）：**每个 P 有自己的 cid 和自己的故事板**；格子按 **约 5 秒一格** 从**该 P 的 0 秒**起铺（P1 215s → 用到第 42 格；P2 170s → 33；P3/P4 171s → 33）；`10x10=100` 格 ≈ 500 秒上限，**尾部补的是纯黑格**（不是"视频里这段没画面"）。
 - ⇒ 所以 `at` 的秒数是**相对那个 P 的起点**，不是整条视频的绝对秒；要绝对秒就自己按 `partStart` 累加换算。跨 P 时把 `p` 传对，或不传 `p` 让工具按秒自动选段（会在日志里说明选了哪段）。
+- **想要某一格就直接给 `tiles:[格号]`**（0 起，和返回值里每帧的 `tile` 一一对应）：本机真栽过 —— `at:[4]` 在 interval 4.43s 时曾被贴到第 0 格（一整格白场），我以为取到了封面、其实取了废帧。贴格按**格起点**算（`floor(sec / intervalSec)`），所以 `at` 里写整数秒经常落进前一格 —— 这不是 bug，是 `at` 的语义；**要哪一格就给 `tiles:[N]` 最省事也最不容易错**（`tiles` 优先于 `at`）。
 - `intervalSec` 优先由"接口给的 `ts[]` 差值"或"实测内容格数除该 P 时长"推出，`intervalBasis` 写清了是哪种；两者都拿不到才退回 5 秒/格。**别把 interval 当成精确值**：贴到某一秒最多精确到那一格（≈ ±interval/2）。
 - 拿不到故事板（`videoshot` 空）时工具回 `ok:false` + `cover`，此时只有封面可看 ⇒ 结论必须标"没看画面"。
 - 若哪天接口改成"一格一图"，工具会自动走另一条支路（直接存原图），`tiledMode:true` 就是这种情况。

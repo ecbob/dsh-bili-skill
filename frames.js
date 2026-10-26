@@ -93,27 +93,22 @@ export function secondsMapOf({ partDuration, contentTiles, grid, ts }) {
 }
 
 /** 挑哪几格：给了 at 就按秒贴最近格（去重），否则在内容格里均匀撒 num 个。 */
-export function pickTiles({ num, at, smap }) {
-  const tiles = Math.max(1, smap.tiles || 1)
-  if (Array.isArray(at) && at.length) {
-    const seen = new Map()
-    for (const sec of at.slice(0, 12)) {
-      const i = smap.tileOfSec(sec)
-      if (!seen.has(i)) seen.set(i, Number(sec))
-    }
-    return [...seen.entries()].map(([tile, requested]) => ({ tile, requested, via: 'at' }))
-  }
+export function pickTiles({ num, at, tiles, smap }) {
+  const tilesN = Math.max(1, smap.tiles || 1)
+  const clamp = (t) => Math.max(0, Math.min(tilesN - 1, Math.round(Number(t)) || 0))
+  const seen = new Map()
+  if (Array.isArray(tiles) && tiles.length) for (const t of tiles.slice(0, 12)) { const i = clamp(t); if (!seen.has(i)) seen.set(i, { requested: smap.secOfTile(i), via: "tiles" }) }
+  if (Array.isArray(at) && at.length) for (const sec of at.slice(0, 12)) { const i = smap.tileOfSec(sec); if (!seen.has(i)) seen.set(i, { requested: Number(sec), via: "at" }) }
+  if (seen.size) return [...seen.entries()].map(([tile, meta]) => ({ tile, ...meta }))
   const want = Math.max(1, Math.min(12, Number(num) || 1))
-  const n = Math.min(want, tiles)
+  const n = Math.min(want, tilesN)
   const out = []
   for (let k = 0; k < n; k++) {
-    const tile = n === 1 ? Math.min(1, tiles - 1) : Math.round(k * (tiles - 1) / (n - 1))
-    out.push({ tile, requested: smap.secOfTile(tile), via: 'spread' })
+    const tile = n === 1 ? Math.min(1, tilesN - 1) : Math.round(k * (tilesN - 1) / (n - 1))
+    out.push({ tile, requested: smap.secOfTile(tile), via: "spread" })
   }
   return out
 }
-
-/** 取帧的文件名：把秒数与格号都编进去，方便人眼对位。 */
 export function frameFileName(bvid, p, tile, sec, ext, keep, stamp) {
   const s = String(Math.round(sec)).padStart(5, '0')
   const t = String(tile).padStart(3, '0')
@@ -170,7 +165,7 @@ export function clearFrames(framesRoot, { scope = 'temp', olderThanDays, keepLas
  * 取帧主流程。deps 由 index.js 注进来（call = 带 cookie/csrf/wbi 的通道、log、framesDir、UA、REFERER），
  * 这样这块逻辑能离线测（假 call + 真 fixture 图）。
  */
-export async function shoot(deps, { bvid, num, at, p } = {}) {
+export async function shoot(deps, { bvid, num, at, tiles, p } = {}) {
   const { call, log, framesDir, UA, REFERER } = deps
   const ffmpeg = deps.ffmpeg ?? findFfmpeg({ ffmpegPath: deps.ffmpegPath, home: deps.home })   // 有 ffmpeg 才谈高清帧；没有就走故事板格子（调用方必须把这点说清）
     let ffmpegState = ffmpeg ? ffmpeg : 'absent'
@@ -224,7 +219,7 @@ export async function shoot(deps, { bvid, num, at, p } = {}) {
     decodedSheets++
     const contentTiles = contentTileCount(img, grid)
     smap = secondsMapOf({ partDuration: pg.duration, contentTiles, grid, ts: grid.ts })
-    for (const pick of pickTiles({ num, at, smap })) {
+    for (const pick of pickTiles({ num, at, tiles, smap })) {
       const tile = pick.tile
       const sheetNo = Math.floor(tile / grid.tilesPerSheet)
       let useImg = img, useBox = { x: (tile % grid.cols) * grid.tileW, y: Math.floor(tile / grid.cols) * grid.tileH, w: grid.tileW, h: grid.tileH }   // 行 = tile/cols、列 = tile%cols（原先写成 (tile%cols)*tileH 再乘一次，纵向落位全错）
@@ -249,7 +244,7 @@ export async function shoot(deps, { bvid, num, at, p } = {}) {
     tiledMode = true
     const urls = grid.sheets
     smap = secondsMapOf({ partDuration: pg.duration, contentTiles: grid.ts && grid.ts.length ? grid.ts.length : urls.length, grid, ts: grid.ts })
-    const order = pickTiles({ num, at, smap })
+    const order = pickTiles({ num, at, tiles, smap })
     for (const pick of order) {
       const one = urls[pick.tile] ? (pick.tile === 0 ? first : await picksOne(urls[pick.tile])) : first
       if (!one) continue

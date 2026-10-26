@@ -621,7 +621,8 @@ export function apply(ctx, config = {}) {
     parameters: {
       bvid: str('BV号', true),
       num: { type: 'integer', description: '取几帧（1-12，默认取插件配置 framesDefault）' },
-      at: { type: 'array', items: { type: 'number' }, description: '要哪几秒（相对所选 P 的起点）；不传就在有内容的格里均匀取' },
+      at: { type: 'array', items: { type: 'number' }, description: '要哪几秒（相对所选 P 的起点，就近贴格）；不传就在有内容的格里均匀取' },
+      tiles: { type: 'array', items: { type: 'integer' }, description: '直接按格号点格（0 起，相对所选 P 的故事板）；与 at 同时给时格号优先 —— 想要某一格就别去换算秒，本机实测换算会贴错' },
       p: { type: 'integer', description: '哪个分 P；不给且给了 at 就自动选装得下这些秒的那段，否则取 P1' },
       hd: { type: 'boolean', description: 'true = 再用外部 ffmpeg 解视频流抽同一秒的高清帧（按关键帧定位）；没 ffmpeg 或抽不动就在 hd_error 里说明，仍回故事板裁的格子帧' },
     },
@@ -643,7 +644,8 @@ export function apply(ctx, config = {}) {
     parameters: {
       action: str('keep | clear | list', true),
       bvid: str('keep 时必填：哪条视频的画面'),
-      at: { type: 'array', items: { type: 'number' }, description: 'keep 时要留的秒（相对该 P 的起点）' },
+      at: { type: 'array', items: { type: 'number' }, description: 'keep 时要留的秒（相对该 P 的起点，就近贴格）' },
+      tiles: { type: 'array', items: { type: 'integer' }, description: 'keep 时直接按格号留哪几格（0 起，相对该 P）；比换算秒准，格号与 bili_shot 报出来的 tile 一一对应' },
       p: { type: 'integer', description: '哪个分 P（不给就按秒自动选，没给秒就取 P1）' },
       reason: str('keep 时写一句为什么值得留（出现在返回值里，方便落账）'),
       scope: str('clear 删哪一类：temp（默认，不动留下的帧）| keep | all'),
@@ -666,11 +668,14 @@ export function apply(ctx, config = {}) {
         for (const f of r.frames) {
           const stamp = (() => { const d = new Date(), q = (n) => String(n).padStart(2, '0'); return `${d.getFullYear()}${q(d.getMonth() + 1)}${q(d.getDate())}-${q(d.getHours())}${q(d.getMinutes())}${q(d.getSeconds())}` })()
           const to = path.join(framesDir, frameFileName(String(args.bvid), f.p, f.tile, f.at, 'jpg', true, stamp))
-          fs.copyFileSync((args.hd === true && f.hd && f.hd.path) ? f.hd.path : f.path, to)
-          kept.push({ ...f, file: `keep/${path.basename(to)}`, path: to, kept: true, marked: `第 ${f.tile} 格（P${f.p} ${f.at}~${f.atTo}s，格内平均亮度 ${f.lum ?? '?'}，留的是 ${f.hd ? 'ffmpeg 解出来的 ' + f.hd.width + 'x' + f.hd.height + ' 高清帧（按关键帧定位）' : '故事板格子帧 ' + f.width + 'x' + f.height}）` })
+          const srcFile = (args.hd === true && f.hd && f.hd.path) ? f.hd.path : f.path
+          let srcBytes = null
+          try { srcBytes = fs.statSync(srcFile).size } catch { /* 量不到就用 shoot 报的字节数 */ }
+          fs.copyFileSync(srcFile, to)
+          kept.push({ ...f, file: `keep/${path.basename(to)}`, path: to, kept: true, bytes: srcBytes ?? f.bytes, width: (f.hd && f.hd.width) || f.width, height: (f.hd && f.hd.height) || f.height, marked: `第 ${f.tile} 格（P${f.p} ${f.at}~${f.atTo}s，格内平均亮度 ${f.lum ?? '?'}，留的是 ${f.hd ? 'ffmpeg 解出来的 ' + f.hd.width + 'x' + f.hd.height + ' 高清帧（按关键帧定位）' : '故事板格子帧 ' + f.width + 'x' + f.height}）` })
         }
 
-          const rows = kept.map((f2) => ({ file: f2.file, bvid: String(args.bvid), p: f2.p, tile: f2.tile, at: f2.at, atTo: f2.atTo, lum: f2.lum ?? null, width: f2.width, height: f2.height, bytes: (f2.hd && f2.hd.bytes) || f2.bytes, method: f2.hd ? f2.hd.method : 'videoshot-crop', hd_stream: f2.hd ? f2.hd.stream : null, hd_error: f2.hd_error || null, pixels: f2.hd ? `${f2.hd.width}x${f2.hd.height}` : `${f2.width}x${f2.height}`, marked: f2.marked, reason: String(args.reason || '') }))
+          const rows = kept.map((f2) => ({ file: f2.file, bvid: String(args.bvid), p: f2.p, tile: f2.tile, at: f2.at, atTo: f2.atTo, lum: f2.lum ?? null, width: f2.width, height: f2.height, bytes: f2.bytes, method: f2.hd ? f2.hd.method : 'videoshot-crop', hd_stream: f2.hd ? f2.hd.stream : null, hd_error: f2.hd_error || null, pixels: f2.hd ? `${f2.hd.width}x${f2.hd.height}` : `${f2.width}x${f2.height}`, marked: f2.marked, reason: String(args.reason || '') }))
           let booked = null
           try { booked = ledger({ action: 'append', table: 'frame', key: 'file', rows }) } catch (e) { booked = { ok: false, message: String(e?.message || e) } }
         const imgs = kept.map((f) => ({ buffer: fs.readFileSync(f.path), mediaType: 'image/jpeg' }))

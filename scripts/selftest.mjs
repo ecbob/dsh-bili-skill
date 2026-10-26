@@ -312,6 +312,34 @@ async function riskCase(homeName, plan, extraCfg) {
     const spread = fr.pickTiles({ num: 3, smap })
     ok("不传 at 时只在有内容的格里均匀撒（不会撒到尾部补位）", spread.length === 3 && spread.every((s) => s.tile <= 42) && new Set(spread.map((s) => s.tile)).size === 3, JSON.stringify(spread.map((s) => s.tile)))
     const byAt = fr.pickTiles({ at: [3, 4, 220], smap })
+    // at 是「那一格的起点秒」⇒ 贴格用 floor 才对；本机栽的那一跤不是我算错秒，而是想要第 1 格却在 at 里写了第 0 格的起点（所以才有 tiles 直取）
+    ok("贴格照起点：span=215/43 时 4.4 仍在第 0 格、到 5.1 才进第 1 格、214 是最后一格", smap.tileOfSec(4.4) === 0 && smap.tileOfSec(5.1) === 1 && smap.tileOfSec(214) === 42, JSON.stringify({ span: smap.interval, a: smap.tileOfSec(4.4), b: smap.tileOfSec(5.1), c: smap.tileOfSec(214) }))
+    const smap42 = fr.secondsMapOf({ partDuration: 215, contentTiles: 43 })
+    const byTiles = fr.pickTiles({ tiles: [7, 7, 3], smap: smap42 })
+    const tlBig = fr.pickTiles({ tiles: [999], smap: smap42 })[0].tile
+    const tlNeg = fr.pickTiles({ tiles: [-4], smap: smap42 })[0].tile
+    const shotT = a.tools.find((t) => t.name === "bili_shot").parameters.properties
+    const framesT = a.tools.find((t) => t.name === "bili_frames").parameters.properties
+    ok("tiles 直接按格号点格：去重、顺序照给、via=tiles（不必再换算秒）", JSON.stringify(byTiles.map((x) => x.tile)) === JSON.stringify([7, 3]) && byTiles.every((x) => x.via === "tiles"), JSON.stringify(byTiles.map((x) => [x.tile, x.via])))
+    ok("tiles 越界夹进内容格（点不到尾部补位）", tlBig === 42 && tlNeg === 0, JSON.stringify({ tlBig: tlBig, tlNeg: tlNeg }))
+    ok("两只工具声明里都有 tiles 入口（按格寻帧不该只能换算秒）", !!shotT.tiles && !!framesT.tiles, JSON.stringify({ shot: Object.keys(shotT), frames: Object.keys(framesT) }))
+    {
+      // 全链路：只给 tiles 也得真按格取（本机栽过：参数声明了但调用处没传，工具静默当没看见、回了一张默认帧）
+      const savedFetch2 = globalThis.fetch
+      const fxq = fs.readFileSync(path.join(fxDir, "ref-quads.jpg"))
+      const vJ2 = { code: 0, message: "OK", data: { aid: 2, cid: 11, pic: "p", title: "T", duration: 89, owner: { name: "U" }, pages: [{ cid: 11, page: 1, part: "P1", duration: 89 }] } }
+      const sJ2 = { code: 0, message: "OK", data: { img_x_len: 2, img_y_len: 2, img_x_size: 4, img_y_size: 4, image: ["//aisubtitle.hdslb.com/fixture/ref-quads.jpg", "//aisubtitle.hdslb.com/fixture/ref-quads.jpg"], ts: [], index: [] } }
+      globalThis.fetch = async (u) => {
+        const s2 = String(u)
+        if (s2.includes("/x/web-interface/view") || s2.includes("/x/player/videoshot")) return { ok: true, status: 200, headers: { get: () => "application/json" }, text: async () => JSON.stringify(s2.includes("/x/web-interface/view") ? vJ2 : sJ2) }
+        if (s2.includes("fixture/ref-quads.jpg")) return { ok: true, status: 200, headers: { get: () => "image/jpeg" }, arrayBuffer: async () => fxq, text: async () => "", json: async () => null }
+        return { ok: false, status: 404, headers: { get: () => "text/html" }, text: async () => "x", json: async () => null }
+      }
+      const call2 = async ({ path: pp }) => (String(pp).includes("/x/web-interface/view") ? { ok: true, code: 0, message: "OK", data: vJ2.data } : { ok: true, code: 0, message: "OK", data: sJ2.data })
+  const rt = await fr.shoot({ call: call2, log: () => {}, framesDir: tmp, UA: "u", REFERER: "https://www.bilibili.com", ffmpegPath: path.join(tmp, "nope.exe") }, { bvid: "BV1tilewiring", tiles: [1, 3], num: 1 })
+      globalThis.fetch = savedFetch2
+      ok("只给 tiles 时 shoot 真按这两格取（参数不许被静默忽略）", (rt.frames || []).length === 2 && JSON.stringify(rt.frames.map((x) => x.tile)) === JSON.stringify([1, 3]), JSON.stringify((rt.frames || []).map((x) => x.tile)))
+    }
     ok("给了 at 就按秒贴最近格、同格去重", JSON.stringify(byAt.map((s) => s.tile)) === JSON.stringify([0, 42]), JSON.stringify(byAt))
   }
   {
