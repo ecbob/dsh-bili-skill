@@ -1,4 +1,4 @@
-// dsh-bili-base 离线自检（重建版）：临时家目录 + 假 fetch + 假 ctx，不联网、不写真实家目录
+// bili-skill 离线自检（重建版）：临时家目录 + 假 fetch + 假 ctx，不联网、不写真实家目录
 // 覆盖：导出形状、5 只工具的声明合规（含 bili_frames）、jpgcrop/frames 的单帧裁切与格子语义、
 // 无损 JSON、cookie 两种拼写、补 csrf 必须在序列化之前、murmur3 指纹向量、Gaia 三步序列、
 // skill provider 契约与活脚注、家目录覆盖与现扫、记账的增/读/删/去重与脏行容忍、坏配置不炸。
@@ -8,8 +8,8 @@ import path from 'node:path'
 import { pathToFileURL, fileURLToPath } from 'node:url'
 
 const pkgDir = path.resolve(path.dirname(fileURLToPath(import.meta.url)), '..')
-const tmp = fs.mkdtempSync(path.join(os.tmpdir(), 'bili-base-selftest-'))
-const home = path.join(tmp, 'bili-base')
+const tmp = fs.mkdtempSync(path.join(os.tmpdir(), 'bili-skill-selftest-'))
+const home = path.join(tmp, 'bili-skill')
 let pass = 0, fail = 0, skipped = 0
 const ok = (label, cond, extra) => {
   if (cond) { pass++; console.log(`PASS  ${label}`) }
@@ -55,7 +55,25 @@ const a = mkCtx()
 mod.apply(a.ctx, { home, logLevel: 'silent' })
 
 /* ── 1. 导出形状 ── */
-eq('包名导出是 bili-base', mod.name, 'bili-base')
+eq('包名导出是 bili-skill', mod.name, 'bili-skill')
+eq('插件 id 也换掉了旧名（不再有旧 id）', mod.name, 'bili-skill')
+{
+  // 老家目录自动搬迁：真造一份 bili-base/（凭证+账本+帧），跑一次迁移，核对文件真在新家、老目录改名留档
+  const base = path.join(tmp, 'mig')
+  const oldH = path.join(base, 'bili-base')
+  const newH = path.join(base, 'bili-skill')
+  fs.mkdirSync(path.join(oldH, 'ledger'), { recursive: true })
+  fs.mkdirSync(path.join(oldH, 'frames', 'keep'), { recursive: true })
+  fs.writeFileSync(path.join(oldH, 'bili_credential.json'), '{"sessdata":"x"}', 'utf8')
+  fs.writeFileSync(path.join(oldH, 'ledger', 'seen.jsonl'), '{"bvid":"BV1mig"}\n', 'utf8')
+  fs.writeFileSync(path.join(oldH, 'frames', 'keep', 'a.jpg'), 'img', 'utf8')
+  const logs = []
+  const mig = mod.migrateOldHome ? mod.migrateOldHome(newH, base, (m) => logs.push(m)) : null
+  ok('改名后老家目录 bili-base/ 会被自动搬进 bili-skill/（凭证/账本/帧都在）', !!mig && mig.copied === 3 && fs.existsSync(path.join(newH, 'bili_credential.json')) && fs.existsSync(path.join(newH, 'ledger', 'seen.jsonl')) && fs.existsSync(path.join(newH, 'frames', 'keep', 'a.jpg')), JSON.stringify({ mig, files: fs.existsSync(newH) ? fs.readdirSync(newH, { recursive: false }) : null }))
+  ok('搬完老目录改名留档 bili-base.migrated-*（不静默删你的数据）', !fs.existsSync(oldH) && fs.readdirSync(base).some((x) => x.startsWith('bili-base.migrated-')), JSON.stringify(fs.readdirSync(base)))
+  const mig2 = mod.migrateOldHome ? mod.migrateOldHome(newH, base, () => {}) : null
+  ok('已经搬过就不再搬第二次（老目录不在时回 null，不重复搬家）', mig2 === null, JSON.stringify(mig2))
+}
 eq('硬注入 = tools + skills', mod.inject, ['tools', 'skills'])
 eq('注册了 5 只工具', a.tools.map((t) => t.name), ['bili_auth', 'bili_api', 'bili_shot', 'bili_frames', 'bili_ledger'])
 ok('每只工具都有非空 description 与 presentCall', a.tools.every((t) => t.description && t.description.length > 30 && typeof t.presentCall === 'function'))
@@ -177,7 +195,7 @@ ok('Gaia 默认就是关的（本机 2×2 实测：只有 Referer 决定降级�
 /* ── 11. skill provider 契约 ── */
 const cl = await a.providers[0].list()
 ok('目录里有 7 份 skill', cl.length === 7, JSON.stringify(cl.map((c) => c.name)))
-ok('每个候选都有有限数字 rank、字符串 source、provider 名等于注册名', cl.every((c) => Number.isFinite(c.rank) && typeof c.source === 'string' && c.provider === 'dsh-bili-base'))
+ok('每个候选都有有限数字 rank、字符串 source、provider 名等于注册名', cl.every((c) => Number.isFinite(c.rank) && typeof c.source === 'string' && c.provider === 'bili-skill'))
 ok('每份都有非空 description 与 whenToUse', cl.every((c) => (c.description || '').length > 8 && (c.whenToUse || '').length > 8))
 ok('每份的 frontmatter name 与文件名一致且是 kebab-case', cl.every((c) => /^[a-z0-9]+(-[a-z0-9]+)*$/.test(c.name) && fs.existsSync(path.join(pkgDir, 'skills', c.name + '.md'))))
 const rg = cl.find((c) => c.name === 'bili-comment-reply')
@@ -191,7 +209,7 @@ const got = await a.providers[0].get({ name: 'bili-search' })
 ok('get() 去掉 frontmatter、追加底座脚注（版本/记忆位置/缓存边界）', !got.content.startsWith('---') && got.content.includes('## 本插件的底座') && got.content.includes('记忆在这儿'))
 ok('搜索说明书按本机实测改口：wbi 签名不是硬性必须（不签也通）、分页要用 page_size（ps 被忽略）、并写明 is_risk 类风控旗标', !/不签常回/.test(got.content) && /不签也通/.test(got.content) && /page_size/.test(got.content) && /静默忽略/.test(got.content) && /is_risk/.test(got.content), got.content.slice(0, 150))
 const pv = JSON.parse(fs.readFileSync(path.join(pkgDir, 'package.json'), 'utf8')).version
-ok('脚注里的版本是现读磁盘的那份（不是模块加载时冻住的）', got.content.includes('dsh-bili-base v' + pv), got.content.slice(-120))
+ok('脚注里的版本是现读磁盘的那份（不是模块加载时冻住的）', got.content.includes('bili-skill v' + pv), got.content.slice(-120))
 ok('凭证那行只声明文件在不在，登录要现查', got.content.includes('这行只说明文件存在') || got.content.includes('不在 ——'))
 const dirs = ['ledger', 'frames', 'skills']
 ok('家目录结构建好了（ledger / frames 都在）', dirs.every((d) => fs.existsSync(path.join(home, d))))
@@ -199,7 +217,7 @@ const aBad = mkCtx(); mod.apply(aBad.ctx, { home: path.join(tmp, 'bad'), logLeve
 ok('坏配置不炸（值被 coerce 回默认）', aBad.tools.length === 5)
 
 /* ── 12. 覆盖：家目录同名文件赢，且正文现读磁盘 ── */
-const ovHome = path.join(tmp, 'ovr', 'bili-base')
+const ovHome = path.join(tmp, 'ovr', 'bili-skill')
 fs.mkdirSync(path.join(ovHome, 'skills'), { recursive: true })
 fs.writeFileSync(path.join(ovHome, 'skills', 'bili-search.md'), '---\nname: bili-search\ndescription: 覆盖版说明书\nwhenToUse: 用它顶掉包内那份。\n---\n\n覆盖正文：改了立刻就生效。\n', 'utf8')
 const a2 = mkCtx(); mod.apply(a2.ctx, { home: ovHome, logLevel: 'silent' })
@@ -462,7 +480,7 @@ async function riskCase(homeName, plan, extraCfg) {
 }
 
 try { fs.rmSync(tmp, { recursive: true, force: true }) } catch { /* 收尾删不掉就算了 */ }
-console.log(`\ndsh-bili-base 离线自检：${pass} 项通过${fail ? `，${fail} 项失败` : ''}${skipped ? `，${skipped} 项跳过` : ''}`)
+console.log(`\nbili-skill 离线自检：${pass} 项通过${fail ? `，${fail} 项失败` : ''}${skipped ? `，${skipped} 项跳过` : ''}`)
 console.log(fail ? 'SOME FAIL' : 'ALL PASS')
 process.exit(fail ? 1 : 0)
 

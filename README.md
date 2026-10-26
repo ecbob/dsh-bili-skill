@@ -1,4 +1,4 @@
-# dsh-bili-base
+# bili-skill
 
 B站 能力的**底座**插件：纯 JS、零运行时依赖（只用 node 内置 + 全局 fetch）。与 `c1overzz/dsh-bili-scroll` **并存** —— 它管"每天替你刷一轮 + 日报 + 定时器"，本插件只管**原子能力**，不抢它的值班轮、家目录与配置。
 
@@ -18,7 +18,7 @@ base（5 只常驻工具）
 
 ## 家目录
 
-全部在 `$DSH_HOME/bili-base/`（可用 patch config 的 `home` 换地方；删掉这目录 = 彻底回滚）：
+全部在 `$DSH_HOME/bili-skill/`（可用 patch config 的 `home` 换地方；删掉这目录 = 彻底回滚）：
 
 | 文件 | 内容 |
 |---|---|
@@ -42,11 +42,11 @@ base（5 只常驻工具）
 ## 装
 
 ```bash
-dsh plugin --profile <profile> add "<这个 tgz 的绝对路径>"   # 或 add dsh-bili-base（发上 npm 之后）
+dsh plugin --profile <profile> add "<这个 tgz 的绝对路径>"   # 或 add bili-skill（发上 npm 之后）
 ```
 装完 `dsh plugin` 会自动把它选进 `dsh.profile.bundles`（因为包声明了 `dsh.bundle.patch`）。**新工具/新 skill 要下一个会话才进声明**（本机会话里已经挂上的宿主会当场装载 bundle，但当前会话的工具目录是会话开始时装配的）。
 
-自检：`node scripts/selftest.mjs`（离线、假 ctx、临时家目录，不联网、不碰真实 `bili-base/`）。
+自检：`node scripts/selftest.mjs`（离线、假 ctx、临时家目录，不联网、不碰真实 `bili-skill/`）。
 
 ## 拓展点（按便宜程度）
 
@@ -54,7 +54,7 @@ dsh plugin --profile <profile> add "<这个 tgz 的绝对路径>"   # 或 add ds
 2. 在家目录放 `skills/<name>.md` 覆盖包内那份（升级不冲）
 3. 加能力：`SKILL_NAMES` 里加名字 + 写一份 md，**不用加新工具**
 4. 加原子操作：`index.js` 里再 `ctx.tools.register(...)`
-5. 状态口：`GET /api/bili-base/status`（版本/登录状态/家目录/skill 来源/生效配置）—— 以后要给它做设置页就用这条路
+5. 状态口：`GET /api/bili-skill/status`（版本/登录状态/家目录/skill 来源/生效配置）—— 以后要给它做设置页就用这条路
 
 ## 已知边界
 

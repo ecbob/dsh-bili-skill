@@ -1,12 +1,12 @@
-# dsh-bili-base 的 bundle 默认层。
-# 注册 Cordis 插件行 `bili-base`：B站 能力底座（登录/凭证、昵称↔UID、通用 API 通道、取帧、记账）
+# bili-skill 的 bundle 默认层。
+# 注册 Cordis 插件行 `bili-skill`：B站 能力底座（登录/凭证、昵称↔UID、通用 API 通道、取帧、记账）
 # + 六份按需加载的 SKILL.md。默认值已编进插件，这里写空对象即可。
 #
 # 想改就在 profile 自己的 cordis.patch.yml 里按同一 id 覆盖（profile 层后于 bundle 层，覆盖是整份换 config）：
-#   - id: bili-base
-#     name: 'dsh-bili-base'
+#   - id: bili-skill
+#     name: 'bili-skill'
 #     config:
-#       home: 'D:/some/other/dir'    # 家目录；空 = $DSH_HOME/bili-base
+#       home: 'D:/some/other/dir'    # 家目录；空 = $DSH_HOME/bili-skill
 #       requestTimeoutMs: 12000      # 单次 HTTP 超时
 #       maxBytes: 262144             # 响应截断上限（字符）
 #       framesDefault: 3             # bili_frames 默认取几帧（1-12）
@@ -14,7 +14,7 @@
 #       uidTtlDays: 7                # 昵称→UID 缓存天数
 #       logLevel: info               # silent | info | debug
 - insert:
-    - id: bili-base
-      name: 'dsh-bili-base'
+    - id: bili-skill
+      name: 'bili-skill'
       config: {}
 #   gaia: false            # 关掉 Gaia 指纹上报（省一次网络往返；但 B站 会把写接口发的评论降级成只自己可见/甚至删除）
