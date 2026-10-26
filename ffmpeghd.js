@@ -5,8 +5,10 @@
  * 想要高清原帧就必须解视频流 —— 纯 JS 不引运行时依赖做不到，所以这里调**外部 ffmpeg 可执行文件**。
  * 找不到 ffmpeg 时 hdFrame 回 {ok:false, why:'no-ffmpeg'}，调用方必须如实说明并回落到格子帧，不许静默换低清。
  *
- * 精度口径（诚实）：`-ss` 放在 `-i` 前面是**按关键帧定位**（快），所以取到的帧可能不是那一秒的精确帧、
- * 而是它前面最近的关键帧 ⇒ method 一律写成 'ffmpeg-keyframe'，别宣称逐帧精确。
+ * 精度口径（诚实，写在代码里、别只留在注释）：
+ *   - `-ss` 放在 `-i` **之后** = 解码到那一秒再取帧 ⇒ 逐帧精确 ⇒ method 'ffmpeg-exact'。
+ *   - `-ss` 放在 `-i` **之前** = 按关键帧定位（快），拿到的可能是前一秒附近最近的关键帧 ⇒ method 'ffmpeg-keyframe'。
+ *   本机做法：先试精确（超时/失败再退），退回时如实标 keyframe，不许把关键帧冒充精确。
  */
 import { spawnSync } from 'node:child_process'
 import fs from 'node:fs'
@@ -59,15 +61,28 @@ export async function hdFrame(deps, { bvid, cid, sec, index }) {
     const url = st.baseUrl || st.base_url
     const tag = `${st.width}x${st.height}@${st.frame_rate || '?'}fps ${st.codecs || '?'}`
     const out = path.join(deps.framesDir, `hd-${bvid}-p${Number(index) || 1}-${String(Math.round(Number(sec) * 100)).padStart(6, '0')}cs-${Date.now()}.jpg`)
-    const args = ['-hide_banner', '-loglevel', 'error', '-user_agent', UA, '-headers', `Referer: ${REFERER}\r\n`, '-ss', String(Number(sec) || 0), '-i', url, '-frames:v', '1', '-q:v', '2', '-y', out]
-    const r = spawnSync(ffmpeg, args, { encoding: 'buffer', timeout: deps.timeoutMs || 45000, windowsHide: true })
-    const err = String(r.stderr || '').slice(0, 160)
-    if (!r.error && r.status === 0 && fs.existsSync(out) && fs.statSync(out).size > 0) {
-      const sz = fs.statSync(out)
-      log(`高清帧解码成功：${tag}（seek ${sec}s 按关键帧）→ ${path.basename(out)} ${sz.size}B`)
-      return { ok: true, path: out, bytes: sz.size, width: Number(st.width) || null, height: Number(st.height) || null, method: 'ffmpeg-keyframe', codec: st.codecs || 'avc1', stream: tag, sec, tried }
+    const head = ['-hide_banner', '-loglevel', 'error', '-user_agent', UA, '-headers', `Referer: ${REFERER}\r\n`]
+    const t = String(Number(sec) || 0)
+    /* 先逐帧精确（-ss 在 -i 之后：解到那一秒才出帧，慢但准），超时或失败再退回按关键帧定位（-ss 在 -i 之前）。
+       两轮的 method 值不同，绝不能都写 keyframe —— 那等于拿关键帧冒充精确帧。 */
+    const attempts = [
+      { method: 'ffmpeg-exact', args: [...head, '-i', url, '-ss', t, '-frames:v', '1', '-skip_frame', 'nokey', '-an', '-q:v', '2', '-y', out], whyTimeout: 'exact-timeout' },
+      { method: 'ffmpeg-keyframe', args: [...head, '-ss', t, '-i', url, '-frames:v', '1', '-an', '-q:v', '2', '-y', out], whyTimeout: 'keyframe-timeout' },
+    ]
+    for (const at of attempts) {
+      const t0 = Date.now()
+      const r = spawnSync(ffmpeg, at.args, { encoding: 'buffer', timeout: deps.timeoutMs || 45000, windowsHide: true })
+      const err = String(r.stderr || '').slice(0, 160)
+      const tookMs = Date.now() - t0
+      if (!r.error && r.status === 0 && fs.existsSync(out) && fs.statSync(out).size > 0) {
+        const sz = fs.statSync(out)
+        log(`高清帧解码成功：${tag}（${at.method} seek ${sec}s，用时 ${tookMs}ms）→ ${path.basename(out)} ${sz.size}B`)
+        return { ok: true, path: out, bytes: sz.size, width: Number(st.width) || null, height: Number(st.height) || null, method: at.method, seekMode: at.method === 'ffmpeg-exact' ? 'exact（-ss 在 -i 之后，逐帧）' : 'keyframe（-ss 在 -i 之前，可能早于目标秒）', tookMs, codec: st.codecs || 'avc1', stream: tag, sec, tried }
+      }
+      tried.push({ stream: tag, method: at.method, reason: r.error ? (r.error.code === 'ETIMEDOUT' ? at.whyTimeout : String(r.error.message || r.error).slice(0, 80)) : `exit=${r.status} ${err}` })
+      try { if (fs.existsSync(out)) fs.unlinkSync(out) } catch { /* 清不掉就算了 */ }
+      log(`高清帧这一轨的 ${at.method} 那轮没成（${tag}）：${tried[tried.length - 1].reason}`)
     }
-    tried.push({ stream: tag, reason: r.error ? String(r.error.message || r.error).slice(0, 80) : `exit=${r.status} ${err}` })
     try { if (fs.existsSync(out)) fs.unlinkSync(out) } catch { /* 清不掉就算了 */ }
     log(`高清帧这一轨没成（${tag}）：${tried[tried.length - 1].reason}`)
   }

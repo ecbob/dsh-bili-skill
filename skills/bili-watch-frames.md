@@ -35,7 +35,7 @@ bili_shot {bvid, num?, at?:[秒,…], tiles?:[格号,…], p?:第几P, hd?:true}
 
 - `hd:true`：按格定位那一秒后，用**外部 ffmpeg** 解流抽帧（`playurl?fnval=16` 挑最高可用的 H.264 轨；本机这条能到 1920×1080@30fps，源即便是 3840×2160 也给到 1080p 轨）。
 - ffmpeg 从哪来（按序）：`config.ffmpegPath`（**用的时候现读，改完不必重启**）→ 环境变量 `DSH_BILI_FFMPEG` → PATH → 家目录旁 `.dsh/.build-tools/ffmpeg/ffmpeg.exe` → 工作区 `.dsh/.build-tools/ffmpeg/ffmpeg.exe`。它是**外部程序、不属于包内依赖**。
-- **精度要说清**：`-ss` 放在 `-i` 之前是**按关键帧定位**，高清帧可能是那一秒之前最近的关键帧，不逐帧精确 ⇒ 账本 `method` 写 `ffmpeg-keyframe`（格子帧写 `videoshot-crop`），`marked` 里也会写明留的是哪一种。
+- **精度要说清（口径以每帧回报的 `method` 为准，别信文档写死的值）**：默认先**逐帧精确** —— `-ss` 放在 `-i` 之后（解到那一秒才出帧），`method = ffmpeg-exact`；那一轮超时或失败才退回**按关键帧定位**（`-ss` 在 `-i` 之前，可能早于目标秒），`method = ffmpeg-keyframe`。本机 2026-10-26 实测：`ffmpeg-exact` 一轮即成，1920×1080、308,581B、1232ms（我原先担心"从头解会很慢"，不成立）。格子帧的 `method` 是 `videoshot-crop`，`marked` 里也会写明留的是哪一种。
 - 找不到 ffmpeg 或抽不动（权限/地址时效/缺解码器）时**不静默降级**：每帧带 `hd_error`，顶层回 `ffmpeg:"absent"` 或 `hd_note`，工具照样回故事板格子帧。纯 JS 解 H.264 做不到，别宣称不依赖外部程序。
 
 ## 留下值得的那几帧：`bili_frames`

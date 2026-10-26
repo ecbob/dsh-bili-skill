@@ -303,6 +303,7 @@ export function apply(ctx, config = {}) {
   } catch { /* frames 还没建 */ }
 
   // 要用的时候现读 config.json（本机实测：改完 ffmpegPath 后不重启、宿主也没重组，挂着的实例还拿旧值 ⇒ 高清帧验不通）
+  const isTrue = (v) => v === true || v === 1 || (typeof v === "string" && /^(true|yes|on|1)$/i.test(v.trim()))   // 宿主实测把布尔序列化成字符串 "True"（首字母大写）⇒ 大小写无关才算对；别用 === true 硬比
   const liveCfg = () => { try { return { ...cfg, ...JSON.parse(fs.readFileSync(path.join(home, 'config.json'), 'utf8')) } } catch { return cfg } }
   const log = (m) => {
     try { fs.appendFileSync(logFile, `${new Date().toISOString()}  ${m}\n`, 'utf8') } catch { /* 日志写不进也别炸 */ }
@@ -352,7 +353,7 @@ export function apply(ctx, config = {}) {
   let gaiaInflight = null
   async function ensureGaia(force = false) {
     // force=true 是「撞风控后的自愈上报」：就算 cfg.gaia 关着也要做 —— 默认关是为了省两次往返，不是禁止上报。
-    if (!cfg.gaia && !force) return { ok: false, why: '配置里 gaia 是关的' }
+    if (!liveCfg().gaia && !force) return { ok: false, why: '配置里 gaia 是关的' }
     let tpl = ''
     try { tpl = fs.readFileSync(gaiaTplFile, 'utf8') } catch { log('⚠️ 缺 gaia/payload-template.txt，跳过指纹上报（评论容易被 AI 审核降级）'); return { ok: false, why: '没有指纹模板' } }
     if (!force && gaia?.ok && Date.now() - Number(gaia.at || 0) < 12 * 3600_000) return { ok: true, cached: true }
@@ -710,7 +711,7 @@ export function apply(ctx, config = {}) {
     output: { schema: { type: 'object', properties: {}, additionalProperties: true }, render: (_a, v) => __renderWithImages(v) },
     execute: async (args, exec) => {
       try {
-        const r = await shoot({ call, log, framesDir, UA, REFERER, home, ffmpegPath: liveCfg().ffmpegPath, hd: args?.hd === true, timeoutMs: liveCfg().requestTimeoutMs }, args || {})
+        const r = await shoot({ call, log, framesDir, UA, REFERER, home, ffmpegPath: liveCfg().ffmpegPath, hd: isTrue(args?.hd), timeoutMs: liveCfg().requestTimeoutMs }, args || {})
         const imgs = (r.frames || []).map((f) => { const src = (f.hd && f.hd.path) || f.path; return { buffer: fs.readFileSync(src), mediaType: /\.png$/i.test(src) ? 'image/png' : 'image/jpeg' } })
         const a = imgs.length ? await __attachImages((k) => ctx.get?.(k), exec, imgs) : { ok: false, reason: 'no_frames', hint: '这一条没有可附的帧' }
         return { ok: true, ...r, image_attached: a.ok, ...(a.ok ? { images: a.refs } : { image_skip_reason: a.reason, hint: a.hint }) }
@@ -742,7 +743,7 @@ export function apply(ctx, config = {}) {
         if (act === 'clear') return clearFrames(framesDir, { scope: args?.scope || 'temp', olderThanDays: args?.olderThanDays, keepLast: args?.keepLast })
         if (act !== 'keep') return { ok: false, message: `action 只认 keep / clear / list，收到的是「${args?.action}」` }
         if (!args?.bvid) return { ok: false, message: 'keep 要 bvid（哪条视频的画面）' }
-        const r = await shoot({ call, log, framesDir, UA, REFERER, home, ffmpegPath: liveCfg().ffmpegPath, hd: args?.hd === true, timeoutMs: liveCfg().requestTimeoutMs }, args)
+        const r = await shoot({ call, log, framesDir, UA, REFERER, home, ffmpegPath: liveCfg().ffmpegPath, hd: isTrue(args?.hd), timeoutMs: liveCfg().requestTimeoutMs }, args)
         if (!r.ok || !(r.frames || []).length) return { ok: false, message: `留帧没成功：${r.message || '一格都没裁出来'}`, detail: r }
         fs.mkdirSync(path.join(framesDir, 'keep'), { recursive: true })
         const kept = []

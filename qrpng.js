@@ -71,8 +71,8 @@ export function totalCodewords(version) {
   const nCenters = cs.length
   const regions = nCenters >= 2 ? nCenters * nCenters - 3 : 0   // 交叉点数 - 被三个定位图案吞掉的角；v2/v3 各只有 1 对中心 ⇒ 1 个对齐图案
   const alignArea = regions * 25
-  /* 格式信息两条复制 15 + 15，加上不属于任何复制路径的暗模块 (size-8,8) ⇒ 共 31 格 */
-  const reserved = 192 + 2 * (size - 16) + 31 + alignArea + (size >= 41 ? 36 : 0)   // 定位角块(含分隔符) + 定时线 + 格式 + 对齐 + 版本信息
+  /* 格式信息 30 格：两套复制各 15，都不与定位/分隔/定时重叠（暗模块就在右下那 15 格里） */
+  const reserved = 192 + 2 * (size - 16) + 30 + alignArea + (size >= 41 ? 36 : 0)   // 定位角块(含分隔符) + 定时线 + 格式 + 对齐 + 版本信息
   const dataModules = size * size - reserved
   const cw = Math.floor(dataModules / 8)
   return { size, cw, dataModules, reserved, remainderBits: dataModules - cw * 8 }
@@ -150,6 +150,33 @@ function buildCodewords(text, version, ecLevel) {
   return out
 }
 
+/* ── 格式信息的放置路径：只在这里定义一次，登记功能区与写值两处共用（先前两处各写一遍、写成 size-8 那种边界，
+   把右下定位图案的分隔符带当成格式区，白占 16 个数据格，还多写一格盖掉数据）──
+   左上复制 15 格：row 8 的列 0..5、7、8，再 column 8 的行 7、5、4、3、2、1、0（跳过 row 6 = 定时线）
+   右下复制 15 格：row 8 的列 size-1..size-7，再 column 8 的行 size-8..size-1（size-8 那格就是暗模块）
+   两套都不与定位/分隔/定时重叠 ⇒ 格式区合计 30 格。 */
+/* 格式信息的 15 位往哪写：照参考实现 setupTypeInfo 的索引式逐格写死（本机读到它的原文）。
+   两套互为复制、值按位相同 —— 关键是「同一条 i 落到哪一格」，我先前自己按几何排，两套排成了同一个顺序，
+   于是第二套整体镜像（对照真基准：格式那 30 格里 19 格不同）。 */
+export function formatPath(size) {
+  const tl = [], br = []
+  for (let i = 0; i < 15; i++) {
+    /* 竖排（column 8 那一列） */
+    if (i < 6) tl.push([i, 8])
+    else if (i < 8) tl.push([i + 1, 8])
+    else tl.push([size - 15 + i, 8])
+    /* 横排（row 8 那一行） */
+    if (i < 8) br.push([8, size - i - 1])
+    else if (i < 9) br.push([8, 15 - i - 1 + 1])
+    else br.push([8, 15 - i - 1])
+  }
+  const reserved = new Set()
+  for (const [r, c] of tl.concat(br)) reserved.add(r + "," + c)
+  reserved.add((size - 8) + ",8")          // 暗模块：库把它当已占的功能格（不是留给数据的路径格）
+  const reservedCells = [...reserved].map((k) => k.split(",").map(Number))
+  return { tl, br, all: tl.concat(br), dark: [size - 8, 8], reserved: reservedCells }
+}
+
 /* ── 矩阵放置：功能图形写真实亮/黑值，另用 isFunc 标出"掩码不许翻"的格 ── */
 function buildMatrix(text, version, ecLevel) {
   const size = 17 + 4 * version
@@ -175,11 +202,8 @@ function buildMatrix(text, version, ecLevel) {
   }
   set(size - 7, 8, 1, true)                                   // 暗模块（标准位置，不是 size-8）
   /* 格式信息先登记成功能格（值等选定掩码后再写），免得被数据占掉 */
-  for (let c = 0; c <= 5; c++) if (!isFunc[8][c]) isFunc[8][c] = 1
-  for (let r = 0; r <= 5; r++) if (!isFunc[r][8]) isFunc[r][8] = 1
-  isFunc[8][7] = 1; isFunc[8][8] = 1; isFunc[7][8] = 1
-  for (let c = size - 1; c >= size - 8; c--) isFunc[8][c] = 1
-  for (let r = size - 1; r >= size - 7; r--) if (!isFunc[r][8]) isFunc[r][8] = 1
+  const FP = formatPath(size)
+  for (const [r, c] of FP.reserved) { isFunc[r][c] = 1; M[r][c] = 0 }   // 值等选定掩码后由 placeFormat 写；先占位并一律标亮。注意暗模块那格不在这里（它是数据格）
   const cws = buildCodewords(text, version, ecLevel)
   const bits = []
   for (const cw of cws) for (let b = 7; b >= 0; b--) bits.push((cw >> b) & 1)
@@ -244,17 +268,16 @@ export function formatBits(ecLevel, mask) {
   return out
 }
 /** 标准摆放：左上复制 bit14→(8,0) … bit8→(8,8)、bit7→(7,8) … bit0→(0,8)；另一条复制 bit7→(8,size-8) … bit0→(8,size-1)、bit14→(size-1,8) … bit8→(size-7,8)。 */
-export function placeFormat(M, size, ecLevel, mask) {
-  const b = formatBits(ecLevel, mask)
-  const bit = (i) => b[14 - i]
-  const put = (r, c, i) => { M[r][c] = bit(i) }
-  put(8, 0, 14); put(8, 1, 13); put(8, 2, 12); put(8, 3, 11); put(8, 4, 10); put(8, 5, 9)
-  put(8, 7, 8); put(8, 8, 7); put(7, 8, 6)
-  put(5, 8, 5); put(4, 8, 4); put(3, 8, 3); put(2, 8, 2); put(1, 8, 1); put(0, 8, 0)
-  put(8, size - 8, 0); put(8, size - 7, 1); put(8, size - 6, 2); put(8, size - 5, 3)
-  put(8, size - 4, 4); put(8, size - 3, 5); put(8, size - 2, 6); put(8, size - 1, 7)
-  put(size - 7, 8, 8); put(size - 6, 8, 9); put(size - 5, 8, 10); put(size - 4, 8, 11)
-  put(size - 3, 8, 12); put(size - 2, 8, 13); put(size - 1, 8, 14)
+export function placeFormat(M, size, ecLevel, maskIdx) {
+  const bits = formatBits(ecLevel, maskIdx)
+  const { tl, br, dark } = formatPath(size)
+  for (let i = 0; i < 15; i++) {
+    const v = bits[14 - i] === "1" ? 1 : 0   // formatBits 给的是 MSB-first 串（最左 = bit14），库按 (bits>>i)&1 取是 LSB-first ⇒ 必须反着索引（我先前直取 bits[i]，整套镜像）
+    M[tl[i][0]][tl[i][1]] = v
+    M[br[i][0]][br[i][1]] = v
+  }
+  M[dark[0]][dark[1]] = 1                    // 暗模块恒黑（参考实现里它是 (!test)，定稿那轮就是 true）
+  return M
 }
 
 /* ── 出图 ── */

@@ -272,7 +272,7 @@ export async function shoot(deps, { bvid, num, at, tiles, p } = {}) {
     grid: { cols: grid.cols, rows: grid.rows, tileW: grid.tileW, tileH: grid.tileH, sheets: grid.sheets.length },
     intervalSec: smap ? smap.interval : null, intervalBasis: smap ? smap.basis : null, tiledMode, frames,
     ffmpeg: ffmpegState,
-    hd_note: deps.hd ? (ffmpeg ? '高清帧由外部 ffmpeg 解视频流抽得（method=ffmpeg-keyframe：按关键帧定位，不是逐帧精确）。' : '要高清但没找到 ffmpeg ⇒ 这批全是故事板格子帧，每帧都带 hd_error=no-ffmpeg。') : null,
+    hd_note: deps.hd ? (ffmpeg ? '高清帧由外部 ffmpeg 解视频流抽得；每帧的 hd.method 就是真口径（ffmpeg-exact = -ss 在 -i 之后逐帧精确；ffmpeg-keyframe = 退回按关键帧定位），别信任何写死的说法。' : '要高清但没找到 ffmpeg ⇒ 这批全是故事板格子帧，每帧都带 hd_error=no-ffmpeg。') : null,
     note: tiledMode ? '这条接口本来就是一格一图，直接存的原图。' : '每格都从拼图里裁成**单独一帧**（480x270 这种），不是整页缩略矩阵；at 是该格区间起点（秒，相对 P' + pg.index + '），atTo 是终点。',
   }
 }
