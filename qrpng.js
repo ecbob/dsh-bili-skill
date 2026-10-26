@@ -14,10 +14,11 @@
  *   - 格式信息 15 位：BCH(15,5) 生成式 10100110111、再异或 101010000010010；我算出的 15 位与基准图上的完全一致。
  *   - 暗模块在 (size-7, 8)：我先前放在 (size-8, 8)，被基准图纠正了。
  * 正确性由**外部解码器 jsQR** 证明（活体见 .dsh\\.tmp-src\\qr-check.mjs，离线断言见 scripts/selftest.mjs），不由本模块自证。
- * 覆盖范围与已知边界（2026-10-26 实测）：v2..v7 / L（只此一档；别的 ecLevel 请求会被当成 L），roundtrip 逐字解回；
+ * 覆盖范围与已知边界（2026-10-26 实测）：v2..v10 × L/M/Q/H 四档（byte 模式；数字/混合模式没做），roundtrip 逐字解回；
  *   v6 及以下的对齐图案中心照参考实现的表（v6 = [6,34]，官方 ISO 是 [6,26,42]）：那份库连格式信息都不写，
  *     它的 v6 我不当真理，但我的 v6 自洽（134 字节那条被 jsQR 逐字解回）。
- *   为什么做到 v7：真登录链接 145 字节，v6/L 上限只有 134 字节，装不下；权威表 v7/L = 154 字节。
+ *   为什么做到 v10：真登录链接 145 字节，v6/L 上限只有 134 字节；先做到 v7（154 字节）够用，后来把四档与 v8..v10 一并补齐。
+ *   对齐中心 v10 = [6,28,50] 照公开 ISO 表（我先前记忆里写的 [6,26,42,58] 是错的；不均匀间隔从 v14 才开始）。
  */
 import zlib from "node:zlib"
 
@@ -57,7 +58,7 @@ function rsEncode(data, ecLen) {
  *   我自己推过三版（按 size 平均、(size-17)/n、(last-6)/(n-1)），每一版都在某个版本上绊住：v4 算出 12 个中心、
  *   v6 该是 [6,26,42] 我给成 [6,20,34]。不再自己推，直接写表。 */
 const ALIGN_CENTERS_BY_SPEC = {
-  1: [], 2: [6, 18], 3: [6, 22], 4: [6, 26], 5: [6, 30], 6: [6, 34], 7: [6, 22, 38],
+  1: [], 2: [6, 18], 3: [6, 22], 4: [6, 26], 5: [6, 30], 6: [6, 34], 7: [6, 22, 38], 8: [6, 24, 42], 9: [6, 26, 46], 10: [6, 28, 50],
 }
 export function alignCenters(version) {
   return ALIGN_CENTERS_BY_SPEC[version] || []
@@ -99,10 +100,18 @@ export function totalCodewords(version) {
 /* v7/L：[2, 98, 78]（2 块 × 20 纠错 = 40）—— 先头我猜成 [1,196,156]：数据/总数虽然对得上权威表的 156/196，
    但那条 145 字节的真登录链接在单块结构下要补 76 位（远超结束符的 4 位上限），而且两条 v7 都被 jsQR 否证；
    照库的 RS_BLOCK_TABLE 抄来 [2,98,78] 才是对的。教训：分块结构不能靠总数反推，必须照表。 */
-const RS_BLOCKS_L = { 2: [[1, 44, 34]], 3: [[1, 70, 55]], 4: [[1, 100, 80]], 5: [[1, 134, 108]], 6: [[2, 86, 68]], 7: [[2, 98, 78]] }
+/* 分块表 v2..v10 × L/M/Q/H（照参考实现的 RS_BLOCK_TABLE 抄，含混合行如 [2,33,15,2,34,16]：那种版本两块长度不同）。
+   教训沿用 v7 那次：分块结构不能靠总码字数反推，必须照表。 */
+const RS_BLOCKS = {
+  L: { 2: [[1, 44, 34]], 3: [[1, 70, 55]], 4: [[1, 100, 80]], 5: [[1, 134, 108]], 6: [[2, 86, 68]], 7: [[2, 98, 78]], 8: [[2, 121, 97]], 9: [[2, 146, 116]], 10: [[2, 86, 68], [2, 87, 69]] },
+  M: { 2: [[1, 44, 28]], 3: [[1, 70, 44]], 4: [[2, 50, 32]], 5: [[2, 67, 43]], 6: [[4, 43, 27]], 7: [[4, 49, 31]], 8: [[2, 60, 38], [2, 61, 39]], 9: [[3, 58, 36], [2, 59, 37]], 10: [[4, 69, 43], [1, 70, 44]] },
+  Q: { 2: [[1, 44, 22]], 3: [[2, 35, 17]], 4: [[2, 50, 24]], 5: [[2, 33, 15], [2, 34, 16]], 6: [[4, 43, 19]], 7: [[2, 32, 14], [4, 33, 15]], 8: [[4, 40, 18], [2, 41, 19]], 9: [[4, 36, 16], [4, 37, 17]], 10: [[6, 43, 19], [2, 44, 20]] },
+  H: { 2: [[1, 44, 16]], 3: [[2, 35, 13]], 4: [[4, 25, 9]], 5: [[2, 33, 11], [2, 34, 12]], 6: [[4, 43, 15]], 7: [[4, 39, 13], [1, 40, 14]], 8: [[4, 40, 14], [2, 41, 15]], 9: [[4, 36, 12], [4, 37, 13]], 10: [[6, 43, 15], [2, 44, 16]] }
+}
 export function structureOf(version, ecLevel = "L") {
-  if (ecLevel !== "L") return null
-  const raw = RS_BLOCKS_L[version]
+  const tbl = RS_BLOCKS[ecLevel]
+  if (!tbl) return null
+  const raw = tbl[version]
   if (!raw) return null
   const blocks = []
   for (const [count, total, data] of raw) for (let i = 0; i < count; i++) blocks.push({ total, data, ec: total - data })
@@ -112,14 +121,16 @@ export function structureOf(version, ecLevel = "L") {
   /* consistent 只是体检提示：拦路应当由数据容量决定，不该由我这条没算准的几何决定（v6 我的几何给 168、两份权威数据都说 172） */
   return { blocks, dataCw, ecTotal: totalCw - dataCw, totalCw, geometryCw: g.cw, remainderBits: g.remainderBits, consistent: totalCw === g.cw }
 }
-/** 该版本 L 档 byte 模式可装字节数（v1..9：4bit 模式 + 8bit 长度 = 2 字节开销） */
+/** 该版本该档 byte 模式可装字节数。长度字段按版本段：v1..9 = 8 位（共 2 字节开销），v10..26 = 16 位（共 3 字节开销）——
+ *   先前我硬扣 2 字节，v10+ 因此虚报容量（v10/L 我报 272，实际按 16 位算只装 271）。 */
 export function capacityBytes(version, ecLevel = "L") {
   const s = structureOf(version, ecLevel)
   if (!s) return null
-  return { bytes: s.dataCw - 2, dataCw: s.dataCw, totalCw: s.totalCw, ecTotal: s.ecTotal, geometryCw: s.geometryCw, consistent: s.consistent }
+  const over = version >= 10 ? 3 : 2   // 模式 4 位 + 长度字段（v10+ 是 16 位）
+  return { bytes: Math.max(0, s.dataCw - over), dataCw: s.dataCw, totalCw: s.totalCw, ecTotal: s.ecTotal, geometryCw: s.geometryCw, consistent: s.consistent, lenBits: version >= 10 ? 16 : 8 }
 }
 export function pickVersion(byteLen, ecLevel = "L") {
-  for (let v = 2; v <= 7; v++) { const c = capacityBytes(v, ecLevel); if (c && byteLen <= c.bytes) return v }
+  for (let v = 2; v <= 10; v++) { const c = capacityBytes(v, ecLevel); if (c && byteLen <= c.bytes) return v }
   return null
 }
 
@@ -142,12 +153,15 @@ class Bits {
 }
 function encodeData(text, version, ecLevel) {
   const cap = structureOf(version, ecLevel)
-  if (!cap) throw new Error(`QR：不支持的版本/等级 ${version}-${ecLevel}（本模块只做 v2..v7 的 L；M/Q/H 档没做 —— 请求别的档时会被当成 L，调用方别宣称支持多档）`)
+  if (!cap) throw new Error(`QR：不支持的版本/等级 ${version}-${ecLevel}（本模块做 v2..v10 × L/M/Q/H 四档；超出如实报错，不硬出图）`)
   /* 分块表与几何不符只作提示，不拦路（见 structureOf 上方说明） */
   const bytes = Buffer.from(text, "utf8")
   const bits = new Bits()
+  /* 长度字段的位宽按版本段走（照两份实现一致的标准口径）：v1..9 = 8 位，v10..26 = 16 位，v27..40 = 16 位。
+     我先前一律写 8 位：v10 的 152 字节按 16 位算需要 4+16+1216 = 1236 位 > 1232，库直接报 code length overflow —— 我这边却按装得下出了图。 */
+  const lenBits = version >= 10 ? 16 : 8
   bits.put(4, 4)
-  bits.put(bytes.length, 8)
+  bits.put(bytes.length, lenBits)
   for (const b of bytes) bits.put(b, 8)
   return { data: bits.finish(cap.dataCw), byteLen: bytes.length }
 }

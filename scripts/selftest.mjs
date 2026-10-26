@@ -152,7 +152,19 @@ ok('effect 挂上了 skill provider 的 disposer', a.effects.some(([, l]) => Str
   for (const [r, c] of cells) bits = (bits << 1) | M[r][c]
   ok('placeFormat 真把 15 位写进格子（按解码器读序回读 = 0x77C4，不是全 0）', bits === 0x77c4, '0x' + bits.toString(16).toUpperCase())
   ok('暗模块 (size-8,8) 被写成黑', M[n - 8][8] === 1, String(M[n - 8][8]))
-  ok('超容量如实回 too_long（不硬出图）', QR.qrPng('x'.repeat(200), { ecLevel: 'L' }).why === 'too_long', JSON.stringify(QR.qrPng('x'.repeat(200), { ecLevel: 'L' })).slice(0, 120))
+  /* 四档容量与长度字段位宽（v1..9 = 8 位、v10+ = 16 位）：v10/L 我先前虚报 272，按 16 位实际只装 271 */
+  const CAP4 = { '2L': 32, '2M': 26, '2Q': 20, '2H': 14, '7L': 154, '7Q': 86, '10L': 271, '10M': 213, '10Q': 151, '10H': 119 }
+  for (const [k, want] of Object.entries(CAP4)) {
+    const c = QR.capacityBytes(Number(k.slice(0, -1)), k.slice(-1))
+    ok('qrpng ' + k + '：可装 ' + want + ' 字节（照权威分块表 + 该版本段的长度字段位宽）', c && c.bytes === want, JSON.stringify(c))
+  }
+  ok('qrpng v10 的长度字段是 16 位（v9 是 8 位）', QR.capacityBytes(10, 'L').lenBits === 16 && QR.capacityBytes(9, 'L').lenBits === 8, JSON.stringify({ v9: QR.capacityBytes(9, 'L').lenBits, v10: QR.capacityBytes(10, 'L').lenBits }))
+  /* 混合分块（两块长度不同，最能把交织写错暴露出来）：v5-Q [2,33,15,2,34,16]、v7-Q [2,32,14,4,33,15] */
+  for (const [v, lv, wantTotal] of [[5, 'Q', 134], [7, 'Q', 196], [10, 'L', 346]]) {
+    const cw = QR.__internals.buildCodewords('u'.repeat(QR.capacityBytes(v, lv).bytes), v, lv)
+    ok('qrpng v' + v + '-' + lv + '：交织后码字数 = ' + wantTotal + '（混合分块也不例外）', cw.length === wantTotal, String(cw.length))
+  }
+  ok('超容量如实回 too_long（不硬出图；v10/L 上限 271 字节 —— 我先前拿 200 字节当超限样本，那时只做到 v7）', QR.qrPng('x'.repeat(300), { ecLevel: 'L' }).why === 'too_long', JSON.stringify(QR.qrPng('x'.repeat(300), { ecLevel: 'L' })).slice(0, 120))
 }
 
 /* ── 2. 宿主 schema 规则自查：properties/required/additionalProperties 只许挂在 type:'object' 上 ── */
