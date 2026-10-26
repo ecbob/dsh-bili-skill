@@ -47,18 +47,30 @@ const hits = []
 const SPI_B3 = 'AAAAAAAA-BBBB-CCCC-DDDD-EEEEEEEEEEEE12345infoc'
 const SPI_B4 = 'AAAAAAAA-BBBB-CCCC-DDDD-EEEEEEEEEEEE-123456789-abcdefghijklmnopqrstuvwxyz0123456789ABCD='
 let risk = null   // 形如 { left: 1, code: -412 } 或 { left: 1, voucher: true }：让业务端点前 left 次回风控样子
+const QR_KEY = 'ab12cd34ef56ab78cd90ef12ab34cd56'   // 扫码假接口的 qrcode_key（真形状就是这种 32 位十六进制）
+const QR_URL = 'https://account.bilibili.com/h5/account-h5/auth/scan-web?navhide=1&callback=close&qrcode_key=' + QR_KEY + '&from=main-fe-header'
+let qrPollScript = []   // poll 的剧本：'waiting' | 'scanned' | 'expired' | 'ok'（取完就继续按 waiting 回）
 globalThis.fetch = async (url, init = {}) => {
   const u = String(url)
   hits.push({ url: u, method: (init.method || 'GET'), headers: { ...(init.headers || {}) }, body: init.body ? String(init.body) : '' })
   let data = { isLogin: true, mid: 12345678, uname: 'tester', level_info: { current_level: 2, current_min: 0, current_exp: 0, next_exp: 0 }, vipStatus: 0, vipType: 1, wbi_img: { img_url: 'https://i0.hdslb.com/bfs/wbi/7cd08494133a4351bb2a2cb38190f56f.png', sub_url: 'https://i0.hdslb.com/bfs/wbi/4932caf07c6049e4b7e523aa1db8ea06.png' } }
   let code = 0
+  let cookieJar = []
   if (u.includes('/x/frontend/finger/spi')) data = { b_3: SPI_B3, b_4: SPI_B4 }
+  else if (u.includes('/x/passport-login/web/qrcode/generate')) data = { qrcode_key: QR_KEY, url: QR_URL }
+  else if (u.includes('/x/passport-login/web/qrcode/poll')) {
+    const step = qrPollScript.length ? qrPollScript.shift() : 'waiting'
+    if (step === 'ok') { data = { code: 0, message: 'OK', url: 'https://passport.biligame.com/x/passport-login/web/crossDomain?ticket=t', refresh_token: 'rt-test', timestamp: 1 }; cookieJar = ['SESSDATA=abc123; Path=/; Domain=bilibili.com', 'bili_jct=jct456; Path=/', 'DedeUserID=12345678; Path=/'] }
+    else if (step === 'scanned') data = { code: 86090, message: '已扫码未确认' }
+    else if (step === 'expired') data = { code: 86038, message: '二维码已失效' }
+    else data = { code: 86101, message: '未扫码' }
+  }
   else if (u.includes('/x/v2/reply/add')) {
     data = { rpid: 999, rpid_str: '999', success_toast: '发送成功' }
     if (risk && risk.left > 0) { risk.left--; if (risk.voucher) { data = { v_voucher: 'voucher-abc' } } else { code = risk.code ?? -412; data = null } }
   }
   const body = JSON.stringify({ code, message: code === 0 ? 'OK' : '请求失败，请稍后再试', data })
-  return { status: 200, ok: true, headers: { get: () => 'application/json' }, text: async () => body, json: async () => JSON.parse(body) }
+  return { status: 200, ok: true, headers: { get: () => 'application/json', getSetCookie: () => cookieJar }, url: u, text: async () => body, json: async () => JSON.parse(body) }
 }
 
 async function probePollShape(body, cookies) {
@@ -653,6 +665,193 @@ async function riskCase(homeName, plan, extraCfg) {
   const g3 = fakeRes(); await route.handler({ method: 'GET', url: '/api/dsh-bili-skill/' }, g3.r)
   const snap1 = JSON.parse(fs.readFileSync(snapFile, 'utf8'))
   ok('状态口每问一次就重刷快照（删掉后能再生成）；根路径 /api/dsh-bili-skill/ 也算状态口', fs.existsSync(snapFile) && g3.box.code === 200 && Date.parse(snap1.at) >= Date.parse(snap0.at), JSON.stringify({ at0: snap0.at, at1: snap1.at, code: g3.box.code }))
+}
+
+/* ── 19+20. 设置页的通道（登录三步 / 偏好读写 / 守门）与偏好在说明书里的落点 ── */
+const apiHome = path.join(tmp, 'api-home')
+const ac = mkCtxWithServer(); mod.apply(ac.ctx, { home: apiHome, logLevel: 'silent' })
+{
+  const route = ac.routes.find((r) => r.path === '/api/dsh-bili-skill')
+  const P = '/api/dsh-bili-skill'
+  const callApi = async (method, url, body) => {
+    const box = { code: 0, headers: {}, body: '', chunks: [] }
+    const res = { writeHead(c, h) { box.code = c; Object.assign(box.headers, h || {}); return res }, end(b) { if (Buffer.isBuffer(b)) box.chunks.push(b); else box.body = b == null ? '' : String(b); return box } }
+    const hs = {}
+    const req = { method, url, headers: {}, on: (ev, cb) => { (hs[ev] = hs[ev] || []).push(cb) }, destroy() {} }
+    const p = route.handler(req, res)
+    for (const cb of hs.data || []) cb(Buffer.from(body == null ? '' : body))
+    for (const cb of hs.end || []) cb()
+    await p
+    try { box.json = JSON.parse(box.body) } catch { box.json = null }
+    box.buffer = Buffer.concat(box.chunks)
+    return box
+  }
+  const s0 = await callApi('GET', P + '/status')
+  ok('GET /status 的快照里带上 searchPrefs（缺省形状）+ 注入去处 + configFile 路径', s0.code === 200 && !!s0.json && s0.json.searchPrefs.order === 'pubdate' && s0.json.searchPrefs.pageSize === 20 && JSON.stringify(s0.json.searchPrefsInjectedTo) === '["bili-search"]' && /config\.json$/.test(String(s0.json.configFile)), JSON.stringify(s0.json && { p: s0.json.searchPrefs, to: s0.json.searchPrefsInjectedTo }))
+  const pr0 = await callApi('GET', P + '/search-prefs')
+  ok('GET /search-prefs 回当前偏好 + 将来贴在说明书末尾那段（一条没设就如实说没设过，不编）', pr0.code === 200 && !!pr0.json && /还没设过任何偏好/.test(pr0.json.injected) && /主人的搜索偏好/.test(pr0.json.injected), String(pr0.json && pr0.json.injected).slice(0, 100))
+  const bad = await callApi('POST', P + '/search-prefs', '这不是 JSON{')
+  ok('请求体不是合法 JSON 时如实 400 bad_json_body（不许当"写成功了"）', bad.code === 400 && bad.json && bad.json.code === 'bad_json_body', bad.code + ' ' + bad.body.slice(0, 70))
+  const sv = await callApi('POST', P + '/search-prefs', JSON.stringify({ searchPrefs: { order: 'click', pageSize: 99, recentDays: -5, excludeKeywords: '广告，搬运, 广告 , 水贴', minViews: '100', maxDurationSec: 0, notes: '只要 DSH 相关，教程别混进来', bogusKey: 'x' } }))
+  const cfgOnDisk = JSON.parse(fs.readFileSync(path.join(apiHome, 'config.json'), 'utf8'))
+  ok('POST /search-prefs 把越界的夹回来（99→50、-5→0）、黑名单去重保序、白名单外的键丢掉', sv.code === 200 && sv.json.prefs.pageSize === 50 && sv.json.prefs.recentDays === 0 && JSON.stringify(sv.json.prefs.excludeKeywords) === JSON.stringify(['广告', '搬运', '水贴']) && sv.json.prefs.order === 'click' && sv.json.prefs.minViews === 100 && !('bogusKey' in sv.json.prefs), JSON.stringify(sv.json.prefs))
+  ok('落的盘就是家目录 config.json 里那份 searchPrefs（用的时候现读 ⇒ 写完不必重启）', cfgOnDisk.searchPrefs && cfgOnDisk.searchPrefs.notes === '只要 DSH 相关，教程别混进来' && cfgOnDisk.searchPrefs.pageSize === 50, JSON.stringify(cfgOnDisk).slice(0, 200))
+  const pr1 = await callApi('GET', P + '/search-prefs')
+  ok('再读一次就是刚写的（现读，不是挂载时冻住的那份）', pr1.json.prefs.order === 'click' && /播放量/.test(pr1.json.injected) && /广告/.test(pr1.json.injected) && /这一段 > 上面那份说明书的默认口径/.test(pr1.json.injected), String(pr1.json.injected).slice(0, 150))
+  const qr400 = await callApi('GET', P + '/login/qr?k=..%2F..%2Fsecret')
+  ok('二维码那条路先验 k 的形状：带 ../ 这类直接 400 bad_key，不去拼路径（防穿越）', qr400.code === 400 && qr400.json.code === 'bad_key', qr400.code + ' ' + qr400.body.slice(0, 70))
+  const qr404 = await callApi('GET', P + '/login/qr?k=abcdef12345678')
+  ok('没 start 过的 k 要不到图：404 no_qr（不许糊成"图是空的"）', qr404.code === 404 && qr404.json.code === 'no_qr', qr404.code + ' ' + qr404.body.slice(0, 70))
+  const st = await callApi('POST', P + '/login/start', '{}')
+  ok('POST /login/start 出码：回 key + qr_png.imageUrl + 180 秒过期（图不塞 JSON，走 /login/qr）', st.code === 200 && st.json.key === QR_KEY && st.json.qr_png.imageUrl === P + '/login/qr?k=' + QR_KEY && st.json.expiresInMs === 180000 && /qrpng/.test(String(st.json.qr_png.engine)), JSON.stringify(st.json.qr_png))
+  const imgb = await callApi('GET', P + '/login/qr?k=' + QR_KEY)
+  ok('GET /login/qr 真发出那张 PNG：image/png + no-store + 字节以 PNG 签名开头', imgb.code === 200 && imgb.headers['content-type'] === 'image/png' && imgb.headers['cache-control'] === 'no-store' && imgb.buffer.length > 100 && imgb.buffer.slice(0, 4).toString('hex') === '89504e47', JSON.stringify({ code: imgb.code, len: imgb.buffer.length, head: imgb.buffer.slice(0, 4).toString('hex') }))
+  const pl0 = await callApi('POST', P + '/login/poll', JSON.stringify({ k: 'bad k!' }))
+  ok('poll 的 k 不合法直接 400（不发请求去猜）', pl0.code === 400 && pl0.json.code === 'bad_key', pl0.code + ' ' + pl0.body.slice(0, 60))
+  const pl1 = await callApi('POST', P + '/login/poll', JSON.stringify({ k: QR_KEY }))
+  ok('未扫码时如实回 waiting（86101），绝不被判成成功', pl1.code === 200 && pl1.json.state === 'waiting' && pl1.json.code === 86101, JSON.stringify(pl1.json && { s: pl1.json.state, c: pl1.json.code }))
+  qrPollScript = ['scanned', 'ok']
+  const pl2 = await callApi('POST', P + '/login/poll', JSON.stringify({ k: QR_KEY }))
+  const pl3 = await callApi('POST', P + '/login/poll', JSON.stringify({ k: QR_KEY }))
+  const credAfter = JSON.parse(fs.readFileSync(path.join(apiHome, 'bili_credential.json'), 'utf8'))
+  const srcAfter = JSON.parse(fs.readFileSync(path.join(apiHome, 'credential-source.json'), 'utf8'))
+  ok('扫码确认那一路才落凭证：uid 对得上、来源记成 scan、crossDomain 补过（中间那步"已扫码待确认"不算数）', pl2.json.state === 'scanned' && pl3.json.state === 'ok' && pl3.json.whoami.uid === '12345678' && credAfter.sessdata === 'abc123' && credAfter.dedeuserid === '12345678' && srcAfter.source === 'scan' && pl3.json.crossdomain && pl3.json.crossdomain.ok === true, JSON.stringify({ s2: pl2.json.state, s3: pl3.json.state, cred: credAfter, src: srcAfter.source, cross: pl3.json.crossdomain }))
+  const acc = await callApi('GET', P + '/account')
+  ok('GET /account 现查：uid/uname/真等级与 vip_status 分开发、凭证来源照实报', acc.code === 200 && acc.json.loggedIn === true && acc.json.uid === '12345678' && acc.json.level === 2 && acc.json.vip_status === 0 && acc.json.credentialSource === 'scan', JSON.stringify(acc.json && { u: acc.json.uid, l: acc.json.level, v: acc.json.vip_status, s: acc.json.credentialSource }))
+  const cl = await callApi('POST', P + '/login/clear', '{}')
+  const acc2 = await callApi('GET', P + '/account')
+  ok('POST /login/clear 删掉凭证与来源记录后，/account 改口：hasCredential=false 且 credentialSource 回到 unknown（假 fetch 不演 -101，所以不看 loggedIn 那一项）', cl.code === 200 && cl.json.ok === true && !fs.existsSync(path.join(apiHome, 'bili_credential.json')) && acc2.json.hasCredential === false && acc2.json.credentialSource === 'unknown', JSON.stringify({ gone: !fs.existsSync(path.join(apiHome, 'bili_credential.json')), hc: acc2.json.hasCredential, src: acc2.json.credentialSource }))
+  const im = await callApi('POST', P + '/login/import', '{}')
+  ok('抄凭证那条路找不到文件时如实回 ok:false 并说明试了哪两处（不假装成功）', im.code === 200 && im.json.ok === false && /bili-duty/.test(im.json.message), im.code + ' ' + String(im.json.message).slice(0, 90))
+  const nr = await callApi('GET', P + '/totally-unknown')
+  ok('前缀下没这条路由：404 且回我们自己的 no-route JSON（好跟宿主的 not found 分开）', nr.code === 404 && nr.json && nr.json.error === 'no-route', nr.code + ' ' + nr.body.slice(0, 60))
+
+  // 落点：这段必须在底座脚注之后、整份正文的最末尾
+  const sk = await ac.providers[0].get({ name: 'bili-search' })
+  ok('bili-search 正文末尾就是主人那段偏好（在「本插件的底座」之后，且是最后一段）', /主人的搜索偏好/.test(sk.content) && sk.content.indexOf('## ⚠️ 主人的搜索偏好') > sk.content.indexOf('## 本插件的底座') && sk.content.trim().endsWith('并在回报里说明哪几步用到了它。'), sk.content.slice(-200))
+  const skc = await ac.providers[0].get({ name: 'bili-comment' })
+  ok('只注入到 bili-search：别的说明书里没有这段', !/主人的搜索偏好/.test(skc.content) && /本插件的底座/.test(skc.content), skc.content.slice(-120))
+  fs.writeFileSync(path.join(apiHome, 'config.json'), JSON.stringify({ ...cfgOnDisk, searchPrefs: { ...cfgOnDisk.searchPrefs, notes: '只看实况解说' } }), 'utf8')
+  const sk2 = await ac.providers[0].get({ name: 'bili-search' })
+  ok('config.json 被改后，同一次挂载内下一次 get() 就是新那句（现读，不必重启或重挂载）', /只看实况解说/.test(sk2.content) && !/只要 DSH 相关/.test(sk2.content), sk2.content.slice(-180))
+  fs.writeFileSync(path.join(apiHome, 'config.json'), JSON.stringify({ searchPrefs: {} }), 'utf8')
+  const sk3 = await ac.providers[0].get({ name: 'bili-search' })
+  ok('偏好清空时末尾改口成"主人还没设过"，但位置仍在最后', /还没设过任何偏好/.test(sk3.content) && sk3.content.trim().endsWith('覆盖上面那份说明书里的口径。'), sk3.content.slice(-180))
+  ok('纯函数口径：__coerceSearchPrefs 夹范围 / 去重 / 丢未知键，__searchPrefsTail 末尾钉重话', (() => { const p = mod.__coerceSearchPrefs({ order: 'nope', pageSize: 999, recentDays: 'x', excludeKeywords: ['a', 'a', ' b '], minViews: -3, notes: '  n  ', zz: 1 }); const t = mod.__searchPrefsTail(p); return p.order === 'pubdate' && p.pageSize === 50 && p.recentDays === 0 && p.excludeKeywords.length === 2 && p.minViews === 0 && p.notes === 'n' && !('zz' in p) && t.startsWith('\n\n---\n\n## ⚠️') && /先按它办/.test(t) })(), 'coerce/tail 口径不对')
+}
+
+/* ── 21. 客户端半个插件：假 ModuleLoader + 假 React + 假 DOM + 假 fetch 真渲染一次 ── */
+{
+  const savedWin = globalThis.window, savedDoc = globalThis.document, savedFetch = globalThis.fetch
+  const tick = () => new Promise((r) => setImmediate(r))
+  const made = []
+  class FakeNode {
+    constructor(tag) { this.tagName = String(tag).toUpperCase(); this.children = []; this._own = ''; this.style = {}; this.classList = new Set(); this._events = {}; this.parentNode = null; made.push(this) }
+    set className(v) { this._cls = String(v); this.classList = new Set(String(v).split(/\s+/).filter(Boolean)) }
+    get className() { return this._cls || '' }
+    set textContent(v) { this._own = String(v) }
+    get textContent() { return this.children.length ? this._own + this.children.map((c) => c.textContent).join('') : this._own }
+    addEventListener(ev, cb) { (this._events[ev] = this._events[ev] || []).push(cb) }
+    dispatch(ev) { for (const cb of this._events[ev] || []) cb({ type: ev }) }
+    append(...ns) { for (const n of ns) { if (n === null || n === undefined || n === false) continue; const node = typeof n === 'object' ? n : Object.assign(new FakeNode('#text'), { _own: String(n) }); node.parentNode = this; this.children.push(node) } }
+    appendChild(n) { this.append(n); return n }
+    removeChild(n) { const i = this.children.indexOf(n); if (i >= 0) this.children.splice(i, 1); if (n) n.parentNode = null; return n }
+  }
+  let hookSlots = [], hookIdx = 0, pendingEffects = []
+  const fakeReact = {
+    createElement(type, props, ...children) {
+      if (typeof type === 'function') return type(props || {})
+      const n = new FakeNode(type)
+      if (props) for (const k of Object.keys(props)) { if (k === 'children') continue; if (k === 'ref') { if (props.ref && typeof props.ref === 'object') props.ref.current = n; continue } n[k] = props[k] }
+      n.append(...children.flat(Infinity))
+      return n
+    },
+    useRef(init) { if (!hookSlots[hookIdx]) hookSlots[hookIdx] = { current: init }; return hookSlots[hookIdx++] },
+    useEffect(fn) { pendingEffects.push(fn) },
+  }
+  const timers = []
+  const clientApi = '/api/dsh-bili-skill'
+  globalThis.window = Object.assign(typeof savedWin === 'object' && savedWin ? savedWin : {}, {
+    __ModuleLoader__: { load: (def) => { globalThis.__clientDef = def } },
+    setInterval: (fn, ms) => { const e = { kind: 'interval', ms, fn, cleared: false }; timers.push(e); return e },
+    clearInterval: (e) => { if (e) e.cleared = true },
+    setTimeout: (fn, ms) => { const e = { kind: 'timeout', ms, fn, cleared: false }; timers.push(e); return e },
+    clearTimeout: (e) => { if (e) e.cleared = true },
+    confirm: () => true,
+  })
+  await import(pathToFileURL(path.join(pkgDir, 'client.js')).href)
+  const clientDef = globalThis.__clientDef
+  globalThis.document = { createElement: (tag) => new FakeNode(tag), body: new FakeNode('body') }
+  const requests = [], bodies = []
+  const seven = new Array(7).fill(0).map((_, i) => ({ name: 'bili-s' + i }))
+  const K = (m, p) => m + ' ' + clientApi + p
+  const canned = {
+    [K('GET', '/account')]: { ok: false, loggedIn: false, message: '账号未登录', credentialSource: 'unknown', home: '<HOME>' },
+    [K('GET', '/search-prefs')]: { ok: true, prefs: { order: 'stow', pageSize: 15, recentDays: 3, minViews: 30, maxDurationSec: 0, excludeKeywords: ['水贴'], notes: '只看解说' }, injected: '## ⚠️ 主人的搜索偏好（预置预览）\n- 排序：收藏\n', configFile: '<HOME>/config.json' },
+    [K('GET', '/status')]: { ok: true, plugin: 'dsh-bili-skill', version: '0.9.0', home: '<HOME>', loggedIn: false, statusFile: '<HOME>/status.json', ledger: '（还没有账本）', skills: seven, searchPrefs: {} },
+    [K('POST', '/login/start')]: { ok: true, key: 'abcdef1234567890abcdef1234567890', url: 'https://account.bilibili.com/h5/scan?x=1', qr_png: { imageUrl: clientApi + '/login/qr?k=abcdef1234567890abcdef1234567890', bytes: 4838, dim: 424, engine: 'qrpng(self)' }, note: '扫一扫', expiresInMs: 180000 },
+    [K('POST', '/login/poll')]: { ok: true, state: 'scanned', code: 86090, message: '已扫码、等手机上点确认' },
+    [K('POST', '/search-prefs')]: { ok: true, prefs: { order: 'dm', pageSize: 30, recentDays: 7, minViews: 50, maxDurationSec: 900, excludeKeywords: ['广告', '搬运'], notes: '只看实况解说' }, injected: '## ⚠️ 主人的搜索偏好（保存后的预览）\n- 排序：弹幕\n', config: {}, snapshot: { version: '0.9.0', home: '<HOME>', loggedIn: false, statusFile: '<HOME>/status.json', ledger: 'note=1', skills: seven } },
+  }
+  globalThis.fetch = async (url, init) => {
+    const u = String(url), m = (init && init.method) || 'GET', key = m + ' ' + u
+    requests.push(key)
+    if (init && init.body != null) { try { bodies.push({ key, body: JSON.parse(String(init.body)) }) } catch { bodies.push({ key, body: null }) } }
+    const payload = canned[key] || { ok: false, error: 'canned 里没这条：' + key }
+    return { ok: true, status: 200, headers: { get: (h) => (String(h).toLowerCase() === 'content-type' ? 'application/json' : '') }, json: async () => payload }
+  }
+
+  const seats = [], disposers = []
+  let reg = null
+  const ctx = { effect: (fn) => { const d = fn(); if (typeof d === 'function') disposers.push(d) }, get: () => undefined, slots: { inject: (seat, factory) => { seats.push(seat); return factory() }, register: (options, component) => { reg = { options, component }; return () => { reg = null } } } }
+  ok('客户端半个插件被假 __ModuleLoader__ 收到（id 就是插件名）', !!clientDef && clientDef.id === 'dsh-bili-skill', JSON.stringify(clientDef && clientDef.id))
+  const cmod = clientDef.factory((id) => (id === 'react' ? fakeReact : {}))
+  ok('客户端声明只依赖 slots（多声明一个运行时没有的服务会让这半块整块起不来）', JSON.stringify(cmod.inject) === '["slots"]' && typeof cmod.apply === 'function', JSON.stringify(cmod.inject))
+  cmod.apply(ctx)
+  ok('apply 把分区挂进 settings.section，注册动作在 ctx.effect 里做', seats.length === 1 && seats[0] === 'settings.section' && !!reg, JSON.stringify({ seats, got: !!reg }))
+  ok('分区选项形状对：name / id / order / label 是给 thunk（框架读它时才取文案）', reg.options.name === 'settings.section' && reg.options.id === 'dsh-bili-skill' && Number.isFinite(reg.options.order) && typeof reg.options.label === 'function' && reg.options.label() === 'B站 能力底座', JSON.stringify({ id: reg.options.id, order: reg.options.order, label: reg.options.label && reg.options.label() }))
+  hookSlots = []; hookIdx = 0; pendingEffects = []
+  const node = reg.component()
+  ok('组件返回 React 元素（返回裸 DOM 节点渲染不出来）', !!node && node.tagName === 'DIV' && /bili-settings/.test(node.className), JSON.stringify(node && { tag: node.tagName, cls: node.className }))
+  const cleanups = []
+  for (const f of pendingEffects.splice(0)) { const c = f(); if (typeof c === 'function') cleanups.push(c) }
+  await tick(); await tick()
+  ok('挂载即打三条读路：登录态、偏好与注入预览、状态快照（都在自家前缀下，同源带 cookie）', requests.includes('GET ' + clientApi + '/account') && requests.includes('GET ' + clientApi + '/search-prefs') && requests.includes('GET ' + clientApi + '/status'), JSON.stringify(requests.slice(0, 4)))
+  const pageNode = made.find((n) => n.className === 'bili-settings')
+  ok('界面本体是在 useEffect 里用 DOM 挂进那个 div 的（三张卡片都在）', !!pageNode && node.children.includes(pageNode) && made.filter((n) => n.className.includes('bili-card')).length >= 3, JSON.stringify({ hasPage: !!pageNode, cards: made.filter((n) => String(n.className).includes('bili-card')).length }))
+  const acctLine = made.find((n) => String(n.className).includes('bili-acct'))
+  ok('未登录时分区直接说"未登录"并提示去出码（不空着让人猜）', /未登录/.test(String(acctLine && acctLine.textContent)), String(acctLine && acctLine.textContent))
+  const prefOrderSel = made.find((n) => n.tagName === 'SELECT')
+  const prefPre0 = made.find((n) => n.tagName === 'PRE')
+  ok('偏好表单从宿主读回来的值填进去（不是硬编码缺省），预览区显示的就是那段末尾文字', prefOrderSel && prefOrderSel.value === 'stow' && /主人的搜索偏好/.test(String(prefPre0 && prefPre0.textContent)), JSON.stringify({ order: prefOrderSel && prefOrderSel.value, pre: String(prefPre0 && prefPre0.textContent).slice(0, 40) }))
+  const btnStart = made.find((n) => n.tagName === 'BUTTON' && /出二维码/.test(String(n.textContent)))
+  btnStart.dispatch('click'); await tick(); await tick()
+  const imgNode = made.find((n) => n.tagName === 'IMG' && String(n.src).includes('/login/qr'))
+  ok('点「出二维码」真发 POST /login/start，并把 img.src 指到宿主发图那条路（浏览器同源自动带 cookie）', requests.includes('POST ' + clientApi + '/login/start') && !!imgNode && /k=abcdef/.test(String(imgNode.src)), JSON.stringify({ reqs: requests.slice(-2), src: imgNode && String(imgNode.src) }))
+  const pollTimer = timers.find((t) => t.kind === 'interval' && t.ms === cmod.__test__.POLL_MS)
+  ok('出码后起了轮询定时器自动问结果（不靠人手点刷新）', !!pollTimer && pollTimer.cleared === false, JSON.stringify(timers.map((t) => [t.kind, t.ms])))
+  pollTimer.fn(); await tick(); await tick()
+  const qrState = made.find((n) => String(n.className).includes('bili-qr-state'))
+  ok('轮询到的中间态写进界面文案：86090 要说"等手机上点确认"，不许写成就成了', /点确认/.test(String(qrState && qrState.textContent)), String(qrState && qrState.textContent))
+  const nums = made.filter((n) => n.tagName === 'INPUT' && n.type === 'number')
+  const txt = made.find((n) => n.tagName === 'INPUT' && n.type === 'text')
+  const area = made.find((n) => n.tagName === 'TEXTAREA')
+  prefOrderSel.value = 'dm'; nums[0].value = '30'; nums[1].value = '7'; nums[2].value = '50'; nums[3].value = '900'; txt.value = '广告,搬运,搬运'; area.value = '只看实况解说'
+  const btnSave = made.find((n) => n.tagName === 'BUTTON' && /保存偏好/.test(String(n.textContent)))
+  btnSave.dispatch('click'); await tick(); await tick()
+  const sentPref = bodies.filter((b) => b.key === 'POST ' + clientApi + '/search-prefs').pop()
+  ok('点「保存偏好」发的是夹过的 searchPrefs 对象（不是裸表单值：逗号串已在客户端拆成数组）', !!sentPref && sentPref.body.searchPrefs.order === 'dm' && sentPref.body.searchPrefs.pageSize === 30 && JSON.stringify(sentPref.body.searchPrefs.excludeKeywords) === JSON.stringify(['广告', '搬运']) && sentPref.body.searchPrefs.notes === '只看实况解说', JSON.stringify(sentPref && sentPref.body))
+  const msgs = made.filter((n) => String(n.className).includes('bili-msg')).map((n) => n.textContent).join(' § ')
+  const prefPre = made.find((n) => n.tagName === 'PRE')
+  ok('保存成功后讲清"写进 config.json 的 searchPrefs、立即生效、不必重启"，预览跟着换成新的', /立即生效/.test(msgs) && /保存后的预览/.test(String(prefPre && prefPre.textContent)), JSON.stringify({ msgs: msgs.slice(0, 90), pre: String(prefPre && prefPre.textContent).slice(0, 40) }))
+  const viewLine = made.find((n) => String(n.className).includes('bili-view-line'))
+  const viewSnap = made.find((n) => String(n.className).includes('bili-view-snap'))
+  ok('现场卡片报的是插件版本 + 登录与否 + 家目录，并指明快照文件路径（判据不依赖 HTTP）', /0\.9\.0/.test(String(viewLine && viewLine.textContent)) && /status\.json/.test(String(viewSnap && viewSnap.textContent)), JSON.stringify({ line: String(viewLine && viewLine.textContent).slice(0, 80), snap: String(viewSnap && viewSnap.textContent).slice(0, 60) }))
+  for (const c of cleanups) c()
+  for (const d of disposers) d()
+  ok('卸载干净：定时器全停、页面从那个 div 上摘下来（渲染的清理归 useEffect，注册的归 disposer）', timers.every((t) => t.cleared) && !node.children.includes(pageNode), JSON.stringify(timers.map((t) => [t.kind, t.ms, t.cleared])))
+  for (const k of ['window', 'document', 'fetch']) globalThis[k] = ({ window: savedWin, document: savedDoc, fetch: savedFetch })[k]
+  delete globalThis.__clientDef
 }
 
 try { fs.rmSync(tmp, { recursive: true, force: true }) } catch { /* 收尾删不掉就算了 */ }

@@ -15,6 +15,16 @@
 #       autoImportCredential: true   # 首次自动从 bili-duty/ 抄一份凭证（省一次扫码；抄完两边独立）
 #       uidTtlDays: 7                # 昵称→UID 缓存天数
 #       logLevel: info               # silent | info | debug
+#       searchPrefs:                 # 主人的搜索偏好：只被拼成一段追加到 bili-search 说明书的**最末尾**（不改工具行为）
+#         order: 'pubdate'           # totalrank | pubdate | click | dm | stow | scores
+#         pageSize: 20               # 1-50（接口参数名是 page_size）
+#         recentDays: 0              # 0 = 不限；否则按 pubdate >= 现在秒数 - N*86400 自己筛
+#         minViews: 30               # 播放下限（0 = 不设）
+#         maxDurationSec: 0          # 时长上限（秒，0 = 不设）
+#         excludeKeywords: ['广告', '搬运']   # 标题/简介命中就跳过
+#         notes: ''                  # 主人另写的一句，优先级高于以上全部
+#   同样这些也能由「设置 → B站 能力底座」那一页写进家目录 config.json（用的时候现读，改完不必重启；
+#   优先级：config.json > 这里的 patch config > 内置默认）。客户端那半个要重启宿主 + 刷新页面才出现。
 - insert:
     - id: dsh-bili-skill
       name: 'dsh-bili-skill'

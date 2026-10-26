@@ -1,11 +1,12 @@
 {
   "name": "dsh-bili-skill",
-  "version": "0.8.3",
-  "description": "B站 能力底座插件（纯 JS、零运行时依赖，只用 node 内置 + 全局 fetch）：扫码登录与凭证、昵称↔UID、一条自动带 Cookie/CSRF/WBI 签名的通用 API 通道、故事板取帧并从整页拼图里裁成单独一帧（可选外部 ffmpeg 解高清帧）、JSONL 记账并按 key 去重；七份 SKILL.md 按需加载说明怎么用它（搜索筛选 / 看画面 / 评论 / 回评论 / 读私信 / 写私信 / 记账），常驻工具声明只有 5 只（bili_auth / bili_api / bili_shot / bili_frames / bili_ledger）。没有定时器、没有值班轮、没有日报，也不会自己决定发评论或发私信。",
+  "version": "0.9.0",
+  "description": "B站 能力底座插件（纯 JS、零运行时依赖，只用 node 内置 + 全局 fetch）：扫码登录与凭证、昵称↔UID、一条自动带 Cookie/CSRF/WBI 签名的通用 API 通道、故事板取帧并从整页拼图里裁成单独一帧（可选外部 ffmpeg 解高清帧）、JSONL 记账并按 key 去重；七份 SKILL.md 按需加载说明怎么用它（搜索筛选 / 看画面 / 评论 / 回评论 / 读私信 / 写私信 / 记账），常驻工具声明只有 5 只（bili_auth / bili_api / bili_shot / bili_frames / bili_ledger）。另在 DSH 的「设置」里加一个分页：出二维码登录、写主人自己的搜索偏好（这段偏好会被注入到 bili-search 说明书的最末尾，用的时候现读、改完不必重启）。没有定时器、没有值班轮、没有日报，也不会自己决定发评论或发私信。",
   "type": "module",
   "main": "./index.js",
   "exports": {
     ".": "./index.js",
+    "./client": "./client.js",
     "./skills/*.md": "./skills/*.md",
     "./package.json": "./package.json"
   },
@@ -21,13 +22,17 @@
     "cordis",
     "bilibili",
     "base",
-    "skill"
+    "skill",
+    "settings",
+    "qrcode",
+    "search"
   ],
   "engines": {
     "node": ">=22"
   },
   "files": [
     "index.js",
+    "client.js",
     "skills",
     "scripts",
     "cordis.patch.yml",
@@ -56,13 +61,20 @@
     }
   },
   "scripts": {
-    "check": "node --check index.js && node --check jpgcrop.js && node --check frames.js && node --check ffmpeghd.js && node --check scripts/selftest.mjs",
+    "check": "node --check index.js && node --check client.js && node --check jpgcrop.js && node --check frames.js && node --check ffmpeghd.js && node --check qrpng.js && node --check qrvendor.js && node --check scripts/selftest.mjs",
     "test": "npm run check && node scripts/selftest.mjs",
     "pack": "npm pack --pack-destination dist"
   },
   "dsh": {
     "bundle": {
       "patch": "./cordis.patch.yml"
+    },
+    "client": {
+      "inject": [
+        "@deepseek-ai/dsh-client-runtime",
+        "@deepseek-ai/dsh-client-ui-slots"
+      ],
+      "platform": "web"
     },
     "compatibility": {
       "dsh": ">=0.2.0-rc.2"

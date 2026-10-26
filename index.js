@@ -28,6 +28,10 @@
  *   3) 在 `SKILL_NAMES` 里加一个名字 + 一个 md 文件 —— 多一个能力，不加工具
  *   4) 在 `TOOLS` 之下加一只 `ctx.tools.register(...)` —— 需要新原子操作时才动
  *
+ * 「设置」里那个分页（扫码登录 + 主人的搜索偏好）在**客户端那半个**：`client.js`（`package.json` 的
+ *   `dsh.client` + `exports["./client"]` 声明，浏览器侧靠 `settings.section` 槽位挂）；它与本文件之间
+ *   走 `/api/dsh-bili-skill` 那组路由。`searchPrefs` 只被拼成一段文字追加到 bili-search 说明书末尾。
+ *
  * 只 import node: 内置（fs/path/os/crypto/url）+ 全局 fetch。不引 @deepseek-ai/*、不引 undici。
  * 「哪些代码是照谁写的、对照裁判是谁」写在 README 的「参考来源」一节，不在这里重复。
  */
@@ -221,9 +225,53 @@ const SKILL_NAMES = ['bili-search', 'bili-watch-frames', 'bili-comment', 'bili-c
 /** 凭证自动导入的来源（并存使用时省一次扫码） */
 const CRED_IMPORT_SOURCES = ['../bili-duty', '../../bili-duty']
 
+// ───────────────────────── 主人的搜索偏好（只注入到 bili-search 说明书的末尾） ─────────────────────────
+/** 可选排序；值就是接口认的那个 token，文本是给 agent 读的说法 */
+const SEARCH_ORDERS = { totalrank: '综合（`order:"totalrank"`）', pubdate: '最新（`order:"pubdate"`）', click: '播放量（`order:"click"`）', dm: '弹幕（`order:"dm"`）', stow: '收藏（`order:"stow"`）', scores: '评分（`order:"scores"`）' }
+const SEARCH_PREF_DEFAULTS = Object.freeze({ order: 'pubdate', pageSize: 20, recentDays: 0, excludeKeywords: [], minViews: 30, maxDurationSec: 0, notes: '' })
+/** 把外面来的（可能乱七八糟的）偏好夹成可用形状：只认这几个键，数值一律夹进范围，其余丢掉 */
+export function __coerceSearchPrefs(raw) {
+  const out = { ...SEARCH_PREF_DEFAULTS, excludeKeywords: [] }
+  const src = raw && typeof raw === 'object' && !Array.isArray(raw) ? raw : {}
+  if (typeof src.order === 'string' && SEARCH_ORDERS[src.order.trim()]) out.order = src.order.trim()
+  const num = (v, lo, hi, dflt) => { const n = Number(v); return Number.isFinite(n) ? Math.max(lo, Math.min(hi, Math.round(n))) : dflt }
+  out.pageSize = num(src.pageSize, 1, 50, SEARCH_PREF_DEFAULTS.pageSize)
+  out.recentDays = num(src.recentDays, 0, 3650, SEARCH_PREF_DEFAULTS.recentDays)
+  out.minViews = num(src.minViews, 0, 100000000, SEARCH_PREF_DEFAULTS.minViews)
+  out.maxDurationSec = num(src.maxDurationSec, 0, 86400, SEARCH_PREF_DEFAULTS.maxDurationSec)
+  const rawWords = Array.isArray(src.excludeKeywords) ? src.excludeKeywords.join(',') : (typeof src.excludeKeywords === 'string' ? src.excludeKeywords : '')
+  const seen = new Set()
+  for (const w of rawWords.split(/[,，、;；\s]+/)) { const k = String(w || '').trim().slice(0, 40); if (!k || seen.has(k)) continue; seen.add(k); out.excludeKeywords.push(k) }
+  out.excludeKeywords = out.excludeKeywords.slice(0, 20)
+  out.notes = typeof src.notes === 'string' ? src.notes.replace(/\s+/g, ' ').trim().slice(0, 600) : ''
+  return out
+}
+/** 这些偏好一条都没设过吗？（设过没有决定注入哪一块文案） */
+export function __searchPrefsAreDefault(p) { return JSON.stringify(__coerceSearchPrefs(p)) === JSON.stringify(SEARCH_PREF_DEFAULTS) }
+/** 说明书末尾那一块：先摆设定值，最后再钉一层"读了就先按它办"的重话 */
+export function __searchPrefsTail(rawPrefs) {
+  const p = __coerceSearchPrefs(rawPrefs)
+  const head = '\n\n---\n\n## ⚠️ 主人的搜索偏好（本段是这份说明书的**最后**，读完就先按它办）\n\n'
+  if (__searchPrefsAreDefault(p)) {
+    return head + '主人**还没设过任何偏好** —— 现在的缺省是：排序 最新、每页 20 条、发布时间与时长不限、播放下限 30。他随时可能在 DSH 的「设置 → B站 能力底座」里改；一旦改了，设定值会写在**这一段的位置**，覆盖上面那份说明书里的口径。\n'
+  }
+  const lines = [
+    `- 排序：${SEARCH_ORDERS[p.order]}`,
+    `- 每页条数：${p.pageSize}（参数名必须是 \`page_size\`；写 \`ps\` 会被静默忽略、照样回 20 条）`,
+    p.recentDays > 0 ? `- 只要最近 ${p.recentDays} 天：自己按 \`pubdate >= 现在秒数 - ${p.recentDays}*86400\` 筛（时间戳是秒，接口不会只回新的）` : '- 发布时间不限（时间戳仍是秒）',
+    p.minViews > 0 ? `- 播放下限：低于 ${p.minViews} 直接跳过 —— 这一条**顶掉**上面"播放 < 30 且评论 < 3 才跳"的默认口径` : '- 播放不设下限',
+    p.maxDurationSec > 0 ? `- 时长上限：超过 ${p.maxDurationSec} 秒的跳过` : '- 时长不设上限',
+  ]
+  if (p.excludeKeywords.length) lines.push(`- 黑名单：标题或简介里出现这些词就跳过 → ${p.excludeKeywords.map((k) => '`' + k + '`').join(' / ')}`)
+  if (p.notes) lines.push(`- 主人另写的一句（**比上面全部优先**）：\n  > ${p.notes}`)
+  return head + '**下面每一条都是插件使用者本人在 DSH「设置 → B站 能力底座」里定的**，不是你的自带口味，也不是背景资料：\n\n' + lines.join('\n') +
+    '\n\n**优先级：这一段 > 上面那份说明书的默认口径 > 你自己的判断。** 你只有在调用本 skill 之后才会读到它，所以它是最后一次进入你视野的东西 —— 冲突时以它为准，别复述它、别当参考资料，直接照它执行，并在回报里说明哪几步用到了它。\n'
+}
+
 const DEFAULTS = {
   home: '', requestTimeoutMs: 12000, maxBytes: 262144, framesDefault: 3,
   autoImportCredential: true, uidTtlDays: 7, logLevel: 'info', watchSkills: false, gaia: false, ffmpegPath: '',                       // 空 = 自动找（DSH_BILI_FFMPEG → PATH → 家目录旁 .dsh/.build-tools/ffmpeg/ffmpeg.exe）
+  searchPrefs: SEARCH_PREF_DEFAULTS,                                    // 主人的搜索偏好：只注入 bili-search 说明书末尾，不改变工具行为
 }
 
 /** patch config + 家里 config.json 的合并（家里优先；空值不覆盖） */
@@ -240,6 +288,7 @@ function loadCfg(raw) {
 }
 function coerce(k, v) {
   if (k === 'home') return typeof v === 'string' ? v.trim() : DEFAULTS.home
+  if (k === 'searchPrefs') return __coerceSearchPrefs(v)
   if (k === 'logLevel') return ['silent', 'info', 'debug'].includes(String(v)) ? String(v) : 'info'
   // 布尔开关必须排在数值处理之前：Number(false)=0 会被下面那句当成非法值、退回默认 true（本机实测栽过）
   if (k === 'autoImportCredential' || k === 'watchSkills' || k === 'gaia') return !!v
@@ -935,7 +984,10 @@ export function apply(ctx, config = {}) {
       async get(candidate) {
         const { file } = skillPath(candidate.name)
         const s = parseFront(fs.readFileSync(file, 'utf8'), candidate.name)
-        return { ...candidate, invocation: { modelInvocable: true, userInvocable: true }, provider: 'dsh-bili-skill', content: s.content + footerFor(candidate.name) }
+        // bili-search 那份额外追加「主人的搜索偏好」到**最末尾**（底座脚注之后）：agent 只有调用 skill 之后才读得到它，
+        // 放在最后是想让它成为最后一次进入视野的信息；用的时候现读 config.json，主人在设置页改完不必重启。
+        const prefsTail = candidate.name === 'bili-search' ? __searchPrefsTail(liveCfg().searchPrefs) : ''
+        return { ...candidate, invocation: { modelInvocable: true, userInvocable: true }, provider: 'dsh-bili-skill', content: s.content + footerFor(candidate.name) + prefsTail }
       },
       close: () => { for (const w of watchers) { try { w.close() } catch { /* 已经关了 */ } } },
     }
@@ -953,7 +1005,11 @@ export function apply(ctx, config = {}) {
   // ⇒ 命令行不带 cookie 打它是 401，那**不是**"路由没挂上"（本机 2026-10-26 实测：签一份 cookie 就回 200）。
   // 所以状态同时落一份家目录快照：判据不依赖 HTTP、不依赖鉴权，重启没挂载也有 base.log 之外的抓手。
   const statusFile = path.join(home, 'status.json')
-  const statusBody = () => ({ ok: true, plugin: 'dsh-bili-skill', version: liveVersion(), home, loggedIn: !!readCred()?.sessdata, credentialFile: credFile, ledgerDir, framesDir: framesDir, logFile, statusFile, skills: buildCandidates().map((c) => ({ name: c.name, from: c.from, source: c.source })), ledger: ledgerIndex(), config: cfg })
+  const configFile = path.join(home, 'config.json')
+  const livePrefs = () => __coerceSearchPrefs(liveCfg().searchPrefs)
+  /** 设置页/接口允许写的键（`home` 故意不在里面：挪家目录是运维动作，不该在界面里手滑改掉；`ffmpegPath` 也不在，它走"空值不覆盖"那条特例） */
+  const WRITABLE_KEYS = ['searchPrefs', 'framesDefault', 'uidTtlDays', 'requestTimeoutMs', 'maxBytes', 'logLevel', 'gaia', 'autoImportCredential', 'watchSkills']
+  const statusBody = () => ({ ok: true, plugin: 'dsh-bili-skill', version: liveVersion(), home, loggedIn: !!readCred()?.sessdata, credentialFile: credFile, ledgerDir, framesDir: framesDir, logFile, statusFile, configFile, skills: buildCandidates().map((c) => ({ name: c.name, from: c.from, source: c.source })), ledger: ledgerIndex(), searchPrefs: livePrefs(), searchPrefsInjectedTo: ['bili-search'], config: cfg })
   /** 把状态写成家目录的 status.json（原子：先 .tmp 再换名）；写不上也不许拦住状态口 */
   const writeStatusSnapshot = () => {
     const body = { ...statusBody(), at: new Date().toISOString() }
@@ -961,16 +1017,96 @@ export function apply(ctx, config = {}) {
     catch (e) { log('⚠️ status.json 没写上（' + String(e?.code || e?.message || e).slice(0, 120) + '）；状态口本身不受影响') }
     return body
   }
+  /** 只写白名单里的键进 config.json（用的时候现读 ⇒ 写完不必重启） */
+  const writeConfigPatch = (patch) => {
+    let cur = {}
+    try { const j = JSON.parse(fs.readFileSync(configFile, 'utf8')); if (j && typeof j === 'object' && !Array.isArray(j)) cur = j } catch { /* 还没有就当空 */ }
+    for (const [k, v] of Object.entries(patch && typeof patch === 'object' ? patch : {})) {
+      if (!WRITABLE_KEYS.includes(k)) { log('设置页想写 ' + k + '：不在白名单里，丢掉不写'); continue }
+      cur[k] = coerce(k, v)
+    }
+    try { fs.writeFileSync(configFile + '.tmp', JSON.stringify(cur, null, 2) + '\n', 'utf8'); fs.renameSync(configFile + '.tmp', configFile) }
+    catch (e) { log('⚠️ config.json 写不上（' + String(e?.code || e?.message || e) + '）') }
+    return cur
+  }
   writeStatusSnapshot()   // 挂载即落一份，不等人来问
+  const readRequestBody = (req) => new Promise((resolve) => {
+    let d = ''
+    req.on('data', (c) => { d += c; if (d.length > 65536) { try { req.destroy?.() } catch { /* 已经断了 */ } } })
+    req.on('end', () => resolve(d))
+    req.on('error', () => resolve(''))
+  })
+  const KEY_RE = /^[A-Za-z0-9_-]{6,64}$/   // qrcode_key 的形状：只允许这个，免得拿它拼出 ../ 去读家目录外的文件
+  const readCredSource = () => { try { return JSON.parse(fs.readFileSync(path.join(home, 'credential-source.json'), 'utf8'))?.source || 'unknown' } catch { return 'unknown' } }
   ctx.inject(['webServer'], (w) => {
     const server = w.get('webServer')
-    if (!server?.register) { log('⚠️ 没有 webServer，状态口没挂上（工具、skill 与 status.json 快照都不受影响）'); return }
+    if (!server?.register) { log('⚠️ 没有 webServer，状态口与设置页的通道都没挂上（工具、skill 与 status.json 快照不受影响）'); return }
     const off = server.register({
       kind: 'prefix', path: '/api/dsh-bili-skill',
-      handler: (req, res) => {
-        const p = String(req.url || '').split('?')[0]
-        if (req.method === 'GET' && (p === '/api/dsh-bili-skill/status' || p === '/api/dsh-bili-skill/')) { res.writeHead(200, { 'content-type': 'application/json; charset=utf-8', 'cache-control': 'no-store' }).end(JSON.stringify(writeStatusSnapshot())); return }
-        res.writeHead(404, { 'content-type': 'application/json; charset=utf-8', 'cache-control': 'no-store' }).end('{"ok":false,"error":"no-route"}')
+      handler: async (req, res) => {
+        const send = (code, obj) => { res.writeHead(code, { 'content-type': 'application/json; charset=utf-8', 'cache-control': 'no-store' }).end(JSON.stringify(obj)) }
+        try {
+          const full = String(req.url || '/')
+          const p = full.split('?')[0]
+          const route = p.startsWith('/api/dsh-bili-skill') ? (p.slice('/api/dsh-bili-skill'.length) || '/') : p
+          const query = new URL(full, 'http://localhost').searchParams
+          const method = String(req.method || 'GET').toUpperCase()
+          if (method === 'GET' && (route === '/' || route === '/status')) return send(200, writeStatusSnapshot())
+          if (method === 'GET' && route === '/account') { const a = await whoami(); return send(200, { ...a, credentialSource: readCredSource(), home }) }
+          if (method === 'GET' && route === '/search-prefs') { const prefs = livePrefs(); return send(200, { ok: true, prefs, injected: __searchPrefsTail(prefs), configFile }) }
+          if (method === 'GET' && route === '/login/qr') {
+            const k = String(query.get('k') || '')
+            if (!KEY_RE.test(k)) return send(400, { ok: false, code: 'bad_key', error: 'k 不合法' })
+            const png = loginStore.get(k + ':png')
+            if (!png) return send(404, { ok: false, code: 'no_qr', error: '这张码没有图（还没 start，或已被更新的一张换掉）' })
+            const abs = path.resolve(png), dir = path.resolve(home, 'tmp-qr')
+            if (!abs.startsWith(dir + path.sep)) return send(400, { ok: false, code: 'bad_path', error: '二维码图不在家目录 tmp-qr 里' })
+            let buf = null
+            try { buf = fs.readFileSync(abs) } catch { /* 刚被删了 */ }
+            if (!buf) return send(404, { ok: false, code: 'no_qr', error: '二维码图读不到' })
+            res.writeHead(200, { 'content-type': 'image/png', 'cache-control': 'no-store' }).end(buf)
+            return
+          }
+          if (method === 'POST' && ['/login/start', '/login/poll', '/login/import', '/login/clear', '/search-prefs'].includes(route)) {
+            let body = {}
+            try { body = JSON.parse((await readRequestBody(req)) || '{}') } catch { return send(400, { ok: false, code: 'bad_json_body', error: '请求体不是合法 JSON' }) }
+            if (!body || typeof body !== 'object' || Array.isArray(body)) body = {}
+            if (route === '/login/start') {
+              try {
+                const r = await loginStart()
+                const qr = r.qr_png && !r.qr_png.failed
+                  ? { file: r.qr_png.path ? path.basename(r.qr_png.path) : null, bytes: r.qr_png.bytes, dim: r.qr_png.dim, engine: r.qr_png.engine, imageUrl: '/api/dsh-bili-skill/login/qr?k=' + encodeURIComponent(r.key) }
+                  : { failed: (r.qr_png && r.qr_png.message) || '两条路都没出图' }
+                return send(200, { ok: true, key: r.key, url: r.url, qr_png: qr, note: r.note, expiresInMs: 180000 })
+              } catch (e) { return send(500, { ok: false, error: String(e?.message || e) }) }
+            }
+            if (route === '/login/poll') {
+              const k = String(body.k || '')
+              if (!KEY_RE.test(k)) return send(400, { ok: false, code: 'bad_key', error: '要传 k（start 给的那串），且只能是字母数字 - _，6..64 位' })
+              try { return send(200, { ok: true, ...(await loginPoll(k)) }) } catch (e) { return send(500, { ok: false, error: String(e?.message || e) }) }
+            }
+            if (route === '/login/import') {
+              const done = importCred()
+              if (done) credSource = 'import'
+              const a = await whoami()
+              return send(200, { ok: done, message: done ? '已从别处抄来一份凭证（之后两边各自独立）' : '没找到可抄的凭证文件（试了 ' + CRED_IMPORT_SOURCES.join(' / ') + '）；那就扫码', account: a, snapshot: writeStatusSnapshot() })
+            }
+            if (route === '/login/clear') {
+              try { fs.rmSync(credFile) } catch { /* 本来就没有 */ }
+              try { fs.rmSync(path.join(home, 'credential-source.json')) } catch { /* 本来就没有 */ }
+              cred = null
+              log('设置页删掉了本机凭证')
+              return send(200, { ok: true, message: '已删掉本机凭证', snapshot: writeStatusSnapshot() })
+            }
+            const prefs = __coerceSearchPrefs(body.searchPrefs ?? body)
+            const written = writeConfigPatch({ searchPrefs: prefs })
+            log(`设置页写入搜索偏好：排序=${prefs.order} 每页=${prefs.pageSize} 最近=${prefs.recentDays || '不限'}天 播放下限=${prefs.minViews} 时长上限=${prefs.maxDurationSec || '不限'}秒 黑名单=${prefs.excludeKeywords.length} 个 备注=${prefs.notes ? '有' : '无'}`)
+            return send(200, { ok: true, prefs, injected: __searchPrefsTail(prefs), config: written, snapshot: writeStatusSnapshot() })
+          }
+          return send(404, { ok: false, code: 'no-route', error: 'no-route' })
+        } catch (e) {
+          try { send(500, { ok: false, code: 'internal_error', error: String(e?.message || e) }) } catch { /* 连接已经断了，随它去 */ }
+        }
       },
     })
     w.effect(() => (typeof off === 'function' ? off : () => {}), 'dsh-bili-skill: status route')

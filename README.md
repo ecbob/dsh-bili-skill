@@ -16,6 +16,7 @@ B站 能力的**底座**插件：纯 JS、零运行时依赖（只用 node 内�
 | 帧管家 | `bili_frames {action:"keep"}` 把选中的格长期留在 `frames/keep/`（文件名带时间戳、同一格重复留不互相覆盖）并**自动往 `ledger/frame` 记一行**；`clear` 默认只删临时帧、不动 `keep/`；`list` 报数量与字节 | 账本行的去重键是 `file` |
 | 记账 | `bili_ledger {tables｜read｜append｜delete}`，一表一个 `<表名>.jsonl`，append 可按字段去重（`key:"bvid"` 这种），脏行不炸（原样带出来），写之前把目录补出来 | `read` 默认回最后 50 行，每行自动补 `at` |
 | 看现场 | 家目录 `status.json` 快照（挂载即写、每问即刷）+ `GET /api/dsh-bili-skill/status` | 见「看现场」 |
+| 设置分页 | DSH「设置」里多一页「B站 能力底座」：**出二维码登录**（页面里直接显示码、自动轮询扫码结果）、**主人的搜索偏好**（排序 / 每页条数 / 最近 N 天 / 播放下限 / 时长上限 / 黑名单词 / 另写一句） | 偏好写进家目录 `config.json` 的 `searchPrefs`，被注入到 `bili-search` 说明书的**最末尾**；见「设置分页」 |
 
 ## 架构
 
@@ -48,7 +49,7 @@ base（5 只常驻工具）                     七份 SKILL.md（按需加载�
 |---|---|
 | `bili_credential.json` | `sessdata` / `bili_jct` / `buvid3` / `dedeuserid` 四个 cookie 字段 |
 | `credential-source.json` | 这份凭证是 `scan`（自己扫的码）还是 `import`（从别处抄的） |
-| `config.json` | 运行时配置：**用的时候现读**，优先于 patch config（改完不必重启） |
+| `config.json` | 运行时配置：**用的时候现读**，优先于 patch config（改完不必重启）。主人从设置分页写进来的搜索偏好就在这一份的 `searchPrefs` 里 |
 | `uid-cache.json` | 昵称 → UID，带时间戳 |
 | `gaia-state.json` | 现取指纹上报后的 `buvid3/buvid4`（默认不报，只有撞风控自愈时才写） |
 | `ledger/<表名>.jsonl` | 记账，建议表名 `seen` / `comment` / `dm` / `note` / `frame` |
@@ -90,10 +91,23 @@ dsh plugin --profile <profile> add "<这颗 tgz 的绝对路径>"
 
 离线自检：`node scripts/selftest.mjs` —— 纯假 ctx + 假 fetch + 临时家目录，不联网、不写真实家目录，**172 项**（含真造目录跑搬家、状态口路由本身、帧裁切与落位、外部基准图盯解码）。
 
+## 设置分页（扫码登录与主人的搜索偏好）
+
+`client.js` 是这插件的**客户端那半个**（跑在 DSH 界面里，`package.json` 里用 `dsh.client` + `exports["./client"]` 声明），它往「设置」里挂一个 `settings.section` 分区，标题「B站 能力底座」，三块：
+
+1. **扫码登录** —— 点「出二维码」：宿主侧 `POST /login/start` 拿 `qrcode_key` 并出图，页面里的 `<img>` 直接指向 `GET /api/dsh-bili-skill/login/qr?k=…`（同源自动带鉴权 cookie，所以浏览器拿得到；那张图本身在家目录 `tmp-qr/`，每次只留最新一张）。之后每 4 秒自动 `POST /login/poll` 问一次，中间态分开显示：`86101` 未扫码 / `86090` 已扫码等手机点确认 / `86038` 已失效（要重新点出码）/ `data.code=0` 才算登录成功（落凭证、跟一次 crossDomain、`credential-source.json` 记成 `scan`）。另有「从别处抄一份凭证」（`/login/import`）与「删掉本机凭证」（`/login/clear`，带确认）。
+2. **主人的搜索偏好** —— 七个字段：排序（综合/最新/播放量/弹幕/收藏/评分）、每页条数（1–50）、只要最近 N 天（0=不限）、播放下限、时长上限（秒）、黑名单词（逗号分隔）、另写一句（最高优先）。点「保存偏好」→ `POST /search-prefs` → 夹范围、去重、只认白名单键，写进家目录 `config.json` 的 `searchPrefs`。旁边「看注入成什么样」直接给出**将来贴在说明书末尾的那段原文**（`GET /search-prefs` 的 `injected` 字段），所以你看到的和 agent 读到的是同一份。
+3. **现场** —— 插件版本、登录与否、家目录、快照文件路径、每张账本几行、说明书几份。
+
+**为什么偏要以"注入到说明书末尾"的方式生效**：偏好不是工具参数，agent 只有在**调用 `bili-search` 这份 skill 之后**才读得到它（skill 正文是按次加载的）。所以宿主侧 `skills` provider 在 `get()` 里把这段追加到正文**最后**（底座脚注之后）：它是最后一次进入模型视野的信息，块首写明"这是主人在设置里定的、不是你的自带口味"，块尾写明**优先级：这一段 > 说明书的默认口径 > 你自己的判断**，并要求照它执行而不是当背景资料复述。只有 `bili-search` 吃这段，其余六份不受影响；一条都没设过时那段会改口成"主人还没设过偏好"，仍然留在最后。
+
+**生效时机**：`searchPrefs` 用的时候现读（`config.json` 一改，下一次 `get()` 就是新的），**不必重启**；但客户端那半个是页面加载的 —— 新装/换版本后要**重启宿主 + 刷新页面**才会出现这个分区（只改 md 文案不用）。
+
 ## 看现场（两条路，别只认一条）
 
-- **家目录 `status.json`** —— 版本、登录与否、家目录、账本每张表几行、skill 目录与来源（bundled/override）、生效配置、写入时间。判"挂没挂、装的是哪版、还剩什么账"不必碰 HTTP，也不受鉴权影响。
-- `GET /api/dsh-bili-skill/status` —— 同一份内容（顺带把快照刷新一遍），`content-type: application/json; charset=utf-8`、`cache-control: no-store`；前缀下不认的路径回自己的 `{"ok":false,"error":"no-route"}`。⚠️ 这条路由挂在**宿主的浏览器会话鉴权**后面：宿主只在 `GET /` 与 `GET /connect` 认 query token 并下发 `dsh-auth-<base64url(sha256(authority))>` 这份 HttpOnly cookie，其余路径一律只认 cookie ⇒ 命令行不带它打这条就是 401，**那不代表路由没挂上**；浏览器里同源直接开（设置页那条路）就是 200。
+- **家目录 `status.json`** —— 版本、登录与否、家目录、`searchPrefs` 现值、注入去处、账本每张表几行、skill 目录与来源（bundled/override）、生效配置、写入时间。判"挂没挂、装的是哪版、还剩什么账"不必碰 HTTP，也不受鉴权影响。
+- `GET /api/dsh-bili-skill/status` —— 同一份内容（顺带把快照刷新一遍），`content-type: application/json; charset=utf-8`、`cache-control: no-store`；前缀下不认的路径回自己的 `{"ok":false,"error":"no-route"}`。⚠️ 这条路由挂在**宿主的浏览器会话鉴权**后面：宿主只在 `GET /` 与 `GET /connect` 认 query token 并下发 `dsh-auth-<base64url(sha256(authority))>` 这份 HttpOnly cookie，其余路径一律只认 cookie ⇒ 命令行不带它打这条就是 401，**那不代表路由没挂上**；浏览器里同源直接开（就是设置页走的那条）是 200。
+- 同一前缀下的其余通道（给设置分页用）：`GET /account`（现查 uid/uname/真等级/`vip_status`/凭证来源）、`GET|POST /search-prefs`、`POST /login/start|poll|import|clear`、`GET /login/qr?k=…`（发 PNG）。`k` 只认 `[A-Za-z0-9_-]{6,64}`，且发图前核路径必须落在家目录 `tmp-qr/` 里（防 `../` 穿越）。
 
 ## 边界
 
@@ -105,6 +119,8 @@ dsh plugin --profile <profile> add "<这颗 tgz 的绝对路径>"
 - 私信"送到了"只能到这一步：拿到 `msg_key` 算投递、`fetch_session_msgs` 读回逐字核对算确认；**标已读没做**（`session_svr/update_ack` 在这台机器上没验通，所以不提供），未读一律认会话级 `unread_count`（`msgfeed/unread` 的 `chat` 会漏）。未互关会撞 `21047`，撞到就停手。
 - 评论/回复的可见性要读回才知道：别把回执的 `state` 当结论。发评论的形状有一条硬口径见下。
 - 想 @ 人：写 `@昵称` 只会留成文本，不会变成可点的 @（`reply/add` 没有可用的 at 字段），要叫人就走私信。
+- 设置分页的界面文案目前**只有中文**（都在 `client.js` 顶部那张 `T` 表里）；要加英文就在同一张表补一份并可选取用 `ctx.locale`。**别把拿不到的服务写进 `inject`** —— 声明了客户端运行时没有的服务会让这半个插件整块起不来（分区直接消失且不报错），所以这里只声明 `slots`。
+- 偏好注入只影响**说明书正文**（agent 读到的内容），不改变任何工具的行为，也不改写 `skills/*.md` 文件本身；包内那份 md 你没设过偏好时是原样的，注入发生在 `get()` 交付的时候。
 
 ## 两条硬口径（别改回去）
 
