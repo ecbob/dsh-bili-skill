@@ -409,7 +409,8 @@ export function apply(ctx, config = {}) {
     try {
       const res = await fetch(url, init)
       const text = await res.text()
-      const cap = text.length > cfg.maxBytes ? `${text.slice(0, cfg.maxBytes)}…[截断 ${(text.length - cfg.maxBytes).toLocaleString('en')} 字符]` : text
+      const maxB = liveCfg().maxBytes   // 现读：改配置不必重启挂载就生效
+      const cap = text.length > maxB ? `${text.slice(0, maxB)}…[截断 ${(text.length - maxB).toLocaleString('en')} 字符]` : text
       let json = null
       try { json = JSON.parse(cap) } catch { /* 不是 JSON（HTML 风控页 / 二进制） */ }
       return { status: res.status, ct: res.headers.get('content-type') || '', json, textLen: text.length, raw: json ? undefined : cap }

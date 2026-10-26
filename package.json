@@ -1,6 +1,6 @@
 {
   "name": "bili-skill",
-  "version": "0.7.17",
+  "version": "0.7.18",
   "description": "B站 能力底座插件（纯 JS、零运行时依赖）：登录与凭证、昵称↔UID、一条带 Cookie/CSRF/WBI 签名的通用 API 通道、取画面帧、JSONL 记账；六项能力（搜索筛选 / 看画面 / 评论 / 读私信 / 写私信 / 记账）以 SKILL.md 形式按需加载，常驻工具声明只有 4 只。与 c1overzz/dsh-bili-scroll 并存，不抢它的值班轮与家目录。",
   "type": "module",
   "main": "./index.js",
