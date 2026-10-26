@@ -249,22 +249,34 @@ const OLD_DIR_RENAMED = (stamp) => OLD_HOME_NAME + '.migrated-' + stamp
 export function migrateOldHome(nextHome, baseDir, log) {
   const oldDir = path.join(baseDir, OLD_HOME_NAME)
   if (oldDir === nextHome || !fs.existsSync(oldDir)) return null
-  const stamp = new Date().toISOString().replace(/[-:TZ.]/g, '').slice(0, 14)
+  const MARK = ".migrated-to-bili-skill"
+  if (fs.existsSync(path.join(oldDir, MARK))) return null   // 已经搬过（哪怕旧壳还在）就不再搬，也不重复报
+  if (!fs.existsSync(nextHome)) fs.mkdirSync(nextHome, { recursive: true })
+  const stamp = new Date().toISOString().replace(/[-:TZ.]/g, "").slice(0, 14)
+  const logs = []
   let copied = 0, failed = 0
-  const walk = (from, to) => {
+  const walk = (from, to, move) => {
     fs.mkdirSync(to, { recursive: true })
     for (const e of fs.readdirSync(from, { withFileTypes: true })) {
       const a = path.join(from, e.name), b = path.join(to, e.name)
-      if (e.isDirectory()) { walk(a, b); continue }
+      if (e.isDirectory()) { walk(a, b, move); continue }
+      if (e.name === MARK.slice(1)) { continue }   // 标记文件本身不算搬运内容
       if (fs.existsSync(b)) continue
-      try { fs.copyFileSync(a, b); copied++ } catch { failed++ }
+      try { if (move) fs.renameSync(a, b); else fs.copyFileSync(a, b); copied++ } catch { failed++ }
     }
   }
-  try { walk(oldDir, nextHome) } catch (e) { failed++; log('改名迁移中途出错：' + String(e?.message || e)) }
-  let renamed = null
-  try { renamed = OLD_DIR_RENAMED(stamp); fs.renameSync(oldDir, path.join(baseDir, renamed)) } catch (e) { renamed = null; failed++ }
-  log('改名迁移：' + OLD_HOME_NAME + '/ → ' + path.basename(nextHome) + '/ 复制 ' + copied + ' 个文件' + (failed ? '、失败 ' + failed + ' 个' : '') + (renamed ? '；老目录留档为 ' + renamed : '；老目录没能改名，请你手动处理'))
-  return { copied, failed, renamed }
+  try { fs.writeFileSync(path.join(oldDir, MARK), JSON.stringify({ to: nextHome, at: new Date().toISOString(), note: "插件已从旧名改名为 bili-skill；这份是搬家后留下的存档，插件不再往这里写" }), "utf8") } catch (e) { log("迁移：标记文件写不上（" + String(e?.code || e) + "），仍继续搬") }
+  try { walk(oldDir, nextHome, false) } catch (e) { failed++; log("迁移：预复制出错 " + String(e?.message || e)) }   // 先把老家内容补进新家（不覆盖已有）
+  let how = null
+  try { fs.renameSync(oldDir, path.join(baseDir, OLD_DIR_RENAMED(stamp))); how = "rename-dir" } catch (e) { how = null; log("迁移：整目录改名不成（" + String(e?.code || e?.code === undefined ? "" : e.code) + String(e?.message || "").slice(0, 60) + "）⇒ 走退路") }
+  if (how !== "rename-dir") {
+    const arch = path.join(baseDir, OLD_HOME_NAME + ".migrated-" + stamp)
+    try { walk(oldDir, arch, true) } catch (e) { failed++; log("迁移退路：搬内容时出错 " + String(e?.message || e)) }
+    try { fs.rmSync(oldDir, { recursive: true, force: true }); if (!fs.existsSync(oldDir)) how = "move-contents" } catch (e) { how = "contents-moved-shell-left"; log("迁移退路：内容已挪走但旧壳删不掉（被占用），里面只剩标记文件，不影响新家") }
+    if (how === "move-contents" || how === "contents-moved-shell-left") log("迁移退路：内容已挪进 " + path.basename(arch) + "/")
+  }
+  log("改名迁移完成：复制/挪动 " + copied + " 个文件" + (failed ? "、失败 " + failed + " 个" : "") + "；方式=" + (how || "failed") + "；新家=" + nextHome)
+  return { copied, failed, how }
 }
 function dirOf(p) { return p && String(p).trim() ? String(p).trim() : path.join(process.env.DSH_HOME || path.join(os.homedir(), '.dsh'), 'bili-skill') }
 
