@@ -409,7 +409,7 @@ export function apply(ctx, config = {}) {
     try {
       const res = await fetch(url, init)
       const text = await res.text()
-      const maxB = liveCfg().maxBytes   // 现读：改配置不必重启挂载就生效
+      const maxB = liveCfg().maxBytes   // 现读（值是否真吃到尚未活体确认，见账本 note.jsonl 2026-10-26）
       const cap = text.length > maxB ? `${text.slice(0, maxB)}…[截断 ${(text.length - maxB).toLocaleString('en')} 字符]` : text
       let json = null
       try { json = JSON.parse(cap) } catch { /* 不是 JSON（HTML 风控页 / 二进制） */ }
@@ -935,3 +935,4 @@ export function apply(ctx, config = {}) {
   log(`已挂载（家=${home}，工具 ${registered} 只，skill ${buildCandidates().length} 份，凭证=${readCred()?.sessdata ? '有' : '无'}）`)
 }
 const PKG = JSON.parse(fs.readFileSync(path.join(here, 'package.json'), 'utf8'))
+
