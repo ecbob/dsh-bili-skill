@@ -213,6 +213,8 @@ ok('effect 挂上了 skill provider 的 disposer', a.effects.some(([, l]) => Str
     ok('qrpng v' + v + '-' + lv + '：交织后码字数 = ' + wantTotal + '（混合分块也不例外）', cw.length === wantTotal, String(cw.length))
   }
   ok('超容量如实回 too_long（不硬出图；v10/L 上限 271 字节 —— 我先前拿 200 字节当超限样本，那时只做到 v7）', QR.qrPng('x'.repeat(300), { ecLevel: 'L' }).why === 'too_long', JSON.stringify(QR.qrPng('x'.repeat(300), { ecLevel: 'L' })).slice(0, 120))
+  const qm = QR.qrPng('https://account.bilibili.com/h5/account-h5/auth/scan-web?navhide=1&callback=close&qrcode_key=ab12cd34ef56ab78cd90ef12ab34cd56&from=main-fe-header')
+  ok('qrPng 除 PNG 外还回 modules 位矩阵（界面画码靠它，不必再发一次图片请求）：行数 = 边长、每行等长且只含 0/1', qm.ok === true && typeof qm.modules === 'string' && (() => { const r = qm.modules.split('\n'); return r.length === qm.size && r.every((x) => x.length === qm.size && /^[01]+$/.test(x)) })(), JSON.stringify({ size: qm.size, rows: String(qm.modules).split('\n').length, head: String(qm.modules).slice(0, 24) }))
 }
 
 /* ── 2. 宿主 schema 规则自查：properties/required/additionalProperties 只许挂在 type:'object' 上 ── */
@@ -703,7 +705,7 @@ const ac = mkCtxWithServer(); mod.apply(ac.ctx, { home: apiHome, logLevel: 'sile
   const qr404 = await callApi('GET', P + '/login/qr?k=abcdef12345678')
   ok('没 start 过的 k 要不到图：404 no_qr（不许糊成"图是空的"）', qr404.code === 404 && qr404.json.code === 'no_qr', qr404.code + ' ' + qr404.body.slice(0, 70))
   const st = await callApi('POST', P + '/login/start', '{}')
-  ok('POST /login/start 出码：回 key + qr_png.imageUrl + 180 秒过期（图不塞 JSON，走 /login/qr）', st.code === 200 && st.json.key === QR_KEY && st.json.qr_png.imageUrl === P + '/login/qr?k=' + QR_KEY && st.json.expiresInMs === 180000 && /qrpng/.test(String(st.json.qr_png.engine)), JSON.stringify(st.json.qr_png))
+  ok('POST /login/start 出码：回 key、180 秒过期，且 qr_png 里带着 modules 位矩阵（界面自己画）+ imageUrl（画不了才走图）', st.code === 200 && st.json.key === QR_KEY && st.json.qr_png.imageUrl === P + '/login/qr?k=' + QR_KEY && st.json.expiresInMs === 180000 && /qrpng/.test(String(st.json.qr_png.engine)) && typeof st.json.qr_png.modules === 'string' && st.json.qr_png.modules.split('\n').length === st.json.qr_png.size, JSON.stringify({ engine: st.json.qr_png.engine, size: st.json.qr_png.size, rows: String(st.json.qr_png.modules || '').split('\n').length }))
   const imgb = await callApi('GET', P + '/login/qr?k=' + QR_KEY)
   ok('GET /login/qr 真发出那张 PNG：image/png + no-store + 字节以 PNG 签名开头', imgb.code === 200 && imgb.headers['content-type'] === 'image/png' && imgb.headers['cache-control'] === 'no-store' && imgb.buffer.length > 100 && imgb.buffer.slice(0, 4).toString('hex') === '89504e47', JSON.stringify({ code: imgb.code, len: imgb.buffer.length, head: imgb.buffer.slice(0, 4).toString('hex') }))
   const pl0 = await callApi('POST', P + '/login/poll', JSON.stringify({ k: 'bad k!' }))
@@ -756,6 +758,7 @@ const ac = mkCtxWithServer(); mod.apply(ac.ctx, { home: apiHome, logLevel: 'sile
     append(...ns) { for (const n of ns) { if (n === null || n === undefined || n === false) continue; const node = typeof n === 'object' ? n : Object.assign(new FakeNode('#text'), { _own: String(n) }); node.parentNode = this; this.children.push(node) } }
     appendChild(n) { this.append(n); return n }
     removeChild(n) { const i = this.children.indexOf(n); if (i >= 0) this.children.splice(i, 1); if (n) n.parentNode = null; return n }
+    getContext(kind) { if (String(kind) !== '2d') return null; if (!this._ctx) { const calls = []; this._ctx = { fillStyle: '', calls, fillRect: (x, y, w, h) => calls.push([x, y, w, h, this._ctx.fillStyle]) } } return this._ctx }
   }
   let hookSlots = [], hookIdx = 0, pendingEffects = []
   const fakeReact = {
@@ -789,7 +792,7 @@ const ac = mkCtxWithServer(); mod.apply(ac.ctx, { home: apiHome, logLevel: 'sile
     [K('GET', '/account')]: { ok: false, loggedIn: false, message: '账号未登录', credentialSource: 'unknown', home: '<HOME>' },
     [K('GET', '/search-prefs')]: { ok: true, prefs: { order: 'stow', pageSize: 15, recentDays: 3, minViews: 30, maxDurationSec: 0, excludeKeywords: ['水贴'], notes: '只看解说' }, injected: '## ⚠️ 主人的搜索偏好（预置预览）\n- 排序：收藏\n', configFile: '<HOME>/config.json' },
     [K('GET', '/status')]: { ok: true, plugin: 'dsh-bili-skill', version: '0.9.0', home: '<HOME>', loggedIn: false, statusFile: '<HOME>/status.json', ledger: '（还没有账本）', skills: seven, searchPrefs: {} },
-    [K('POST', '/login/start')]: { ok: true, key: 'abcdef1234567890abcdef1234567890', url: 'https://account.bilibili.com/h5/scan?x=1', qr_png: { imageUrl: clientApi + '/login/qr?k=abcdef1234567890abcdef1234567890', bytes: 4838, dim: 424, engine: 'qrpng(self)' }, note: '扫一扫', expiresInMs: 180000 },
+    [K('POST', '/login/start')]: { ok: true, key: 'abcdef1234567890abcdef1234567890', url: 'https://account.bilibili.com/h5/scan?x=1', qr_png: { imageUrl: clientApi + '/login/qr?k=abcdef1234567890abcdef1234567890', bytes: 4875, dim: 424, size: 3, engine: 'qrpng(self)', modules: '101\n010\n101' }, note: '扫一扫', expiresInMs: 180000 },
     [K('POST', '/login/poll')]: { ok: true, state: 'scanned', code: 86090, message: '已扫码、等手机上点确认' },
     [K('POST', '/search-prefs')]: { ok: true, prefs: { order: 'dm', pageSize: 30, recentDays: 7, minViews: 50, maxDurationSec: 900, excludeKeywords: ['广告', '搬运'], notes: '只看实况解说' }, injected: '## ⚠️ 主人的搜索偏好（保存后的预览）\n- 排序：弹幕\n', config: {}, snapshot: { version: '0.9.0', home: '<HOME>', loggedIn: false, statusFile: '<HOME>/status.json', ledger: 'note=1', skills: seven } },
   }
@@ -830,8 +833,14 @@ const ac = mkCtxWithServer(); mod.apply(ac.ctx, { home: apiHome, logLevel: 'sile
   btnStart.dispatch('click')
   ok('点下去立刻禁掉「出二维码」并转圈等回话（连点不会叠出一堆码）', btnStart.disabled === true && String(qrBoxNode.className).includes('off'), JSON.stringify({ disabled: btnStart.disabled, cls: qrBoxNode.className }))
   await tick(); await tick()
-  const imgNode = made.find((n) => n.tagName === 'IMG' && String(n.src).includes('/login/qr'))
-  ok('点「出二维码」真发 POST /login/start，并把 img.src 指到宿主发图那条路（浏览器同源自动带 cookie）', requests.includes('POST ' + clientApi + '/login/start') && !!imgNode && /k=abcdef/.test(String(imgNode.src)), JSON.stringify({ reqs: requests.slice(-2), src: imgNode && String(imgNode.src) }))
+  const canvasNode = made.find((n) => n.tagName === 'CANVAS')
+  const imgNode = made.find((n) => n.tagName === 'IMG')
+  ok('点「出二维码」用的是宿主随 start 回的位矩阵在 canvas 上画（不再靠图片子资源请求带不带 cookie），img 那条路退回备用（并挂着 error 兜底话）', requests.includes('POST ' + clientApi + '/login/start') && !!canvasNode && !String(canvasNode.className).includes('bili-hidden') && String(imgNode.className).includes('bili-hidden') && !imgNode.src, JSON.stringify({ canvas: canvasNode && canvasNode.className, img: imgNode && imgNode.className, src: imgNode && imgNode.src }))
+  const g = canvasNode && canvasNode.getContext && canvasNode.getContext('2d')
+  ok('画得对：整块刷白再逐格填黑，黑格数 = 矩阵里 1 的个数，缩放是整数倍且留静区（3×3 剧本 → 176px、16px 一格、5 个黑格）', !!g && g.calls.length === 6 && g.calls[0][4] === '#fff' && g.calls[0][2] === 176 && canvasNode.width === 176 && g.calls.slice(1).every((r) => r[4] === '#000' && r[2] === 16 && r[0] % 16 === 0 && r[1] % 16 === 0), JSON.stringify(g && g.calls))
+  imgNode.dispatch('error')
+  const loginMsgNode = made.filter((n) => String(n.className).split(/\s+/).includes('bili-msg'))[0]
+  ok('图片那条路真不通时界面改口讲人话、并把可在手机上打开的链接给出来（不静默留一张裂图）', /图片这条路没通/.test(String(loginMsgNode && loginMsgNode.textContent)) && /account\.bilibili\.com/.test(String(loginMsgNode && loginMsgNode.textContent)), JSON.stringify({ cls: loginMsgNode && loginMsgNode.className, text: String(loginMsgNode && loginMsgNode.textContent).slice(0, 90) }))
   const cdLine = made.find((n) => n.className === 'bili-count'), linkLine = made.find((n) => n.className === 'bili-link')
   ok('回话到了：按钮解禁、二维码区显形，并写明"剩余约 N 秒"和可在手机上打开的链接（不让人盯着静止的码猜）', btnStart.disabled === false && !String(qrBoxNode.className).includes('off') && /剩余约 \d+ 秒/.test(String(cdLine && cdLine.textContent)) && /手机上打开/.test(String(linkLine && linkLine.textContent)), JSON.stringify({ cls: qrBoxNode.className, cd: cdLine && cdLine.textContent, link: String(linkLine && linkLine.textContent).slice(0, 60) }))
   const pollTimer = timers.find((t) => t.kind === 'interval' && t.ms === cmod.__test__.POLL_MS)
@@ -870,6 +879,13 @@ const ac = mkCtxWithServer(); mod.apply(ac.ctx, { home: apiHome, logLevel: 'sile
   ok('卸载干净：定时器全停、页面从那个 div 上摘下来（渲染的清理归 useEffect，注册的归 disposer）', timers.every((t) => t.cleared) && !node.children.includes(pageNode), JSON.stringify(timers.map((t) => [t.kind, t.ms, t.cleared])))
   for (const k of ['window', 'document', 'fetch']) globalThis[k] = ({ window: savedWin, document: savedDoc, fetch: savedFetch })[k]
   delete globalThis.__clientDef
+}
+
+/* ── 22. 回落那条引擎也给 modules（界面画码不挑引擎） ── */
+{
+  const qv = await import(pathToFileURL(path.join(pkgDir, 'qrvendor.js')).href)
+  const r = qv.qrPngVendor('https://account.bilibili.com/h5/account-h5/auth/scan-web?navhide=1&callback=close&qrcode_key=ab12cd34ef56ab78cd90ef12ab34cd56&from=main-fe-header')
+  ok('vendored qrcode-generator 那条也回 modules（行数 = 边长、每行等长），所以 start 响应里的矩阵不依赖用的是哪个引擎', r.ok === true && typeof r.modules === 'string' && r.modules.split('\n').length === r.size && r.modules.split('\n').every((x) => x.length === r.size && /^[01]+$/.test(x)), JSON.stringify({ ok: r.ok, size: r.size, rows: String(r.modules || '').split('\n').length }))
 }
 
 try { fs.rmSync(tmp, { recursive: true, force: true }) } catch { /* 收尾删不掉就算了 */ }

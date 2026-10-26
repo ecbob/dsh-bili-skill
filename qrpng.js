@@ -379,7 +379,9 @@ export function qrPng(text, opts = {}) {
     const y0 = (r + quiet) * scale, x0 = (c + quiet) * scale
     for (let dy = 0; dy < scale; dy++) for (let dx = 0; dx < scale; dx++) px[(y0 + dy) * dim + (x0 + dx)] = 0
   }
-  return { ok: true, png: matrixToPng(px, dim), version, size: base.size, mask: best.mask, penalty: best.p, dim, byteLen: bytes.length, codewords: base.codewords, capacity: cap }
+  // modules：未加静区/缩放的**位矩阵**（每行一串 0/1）。PNG 是给聊天附件用的，而界面里画码可以直接拿这块去 canvas 填格 ——
+  // 省掉一次"图片子资源请求"（那条路要不要带鉴权 cookie 由宿主决定，浏览器不一致时就是一张裂图），也保证整数倍缩放不糊。
+  return { ok: true, png: matrixToPng(px, dim), version, size: base.size, mask: best.mask, penalty: best.p, dim, byteLen: bytes.length, codewords: base.codewords, capacity: cap, modules: best.M.map((row) => row.map((v) => (v ? 1 : 0)).join('')).join('\n') }
 }
 
 /* ── PNG（8bit 灰度、非交织；交给 zlib 现成封装 —— 手搓 stored 块我漏过 adler32 栽过一次）── */

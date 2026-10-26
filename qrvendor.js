@@ -36,5 +36,7 @@ export function qrPngVendor(text, opts = {}) {
     for (let dy = 0; dy < scale; dy++) for (let dx = 0; dx < scale; dx++) px[(y0 + dy) * dim + (x0 + dx)] = 0
   }
   /* version 由模块数反推：库里的 typeNumber 字段在这个上下文读不到（本机实测回 undefined），别再往外报假数 */
-  return { ok: true, png: matrixToPng(px, dim), dim, version: Math.round((size - 17) / 4), size }
+  const rows = []
+  for (let r = 0; r < size; r++) { let line = ""; for (let c = 0; c < size; c++) line += q.isDark(r, c) ? "1" : "0"; rows.push(line) }
+  return { ok: true, png: matrixToPng(px, dim), dim, version: Math.round((size - 17) / 4), size, modules: rows.join("\n") }
 }

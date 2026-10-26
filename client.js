@@ -57,6 +57,8 @@ window.__ModuleLoader__.load({
 			"qr.countdown": "剩余约 {sec} 秒（过期就再点一次出码）",
 			"qr.link": "不方便扫码就在手机上打开：{url}",
 			"qr.imgfail": "二维码图没出来：{why}",
+			"qr.matrixfallback": "这台环境用不了 canvas，改走图片那条路（图要是不出来，就用下面那条链接在手机上打开）",
+			"qr.imgfail2": "图片这条路没通（多半是这张码的请求没带上页面那份登录 cookie）—— 直接在手机上打开这条链接：{url}",
 			"qr.pollfail": "轮询失败：{error}",
 			"qr.import": "从别处抄一份凭证",
 			"qr.clear": "删掉本机凭证",
@@ -118,7 +120,10 @@ window.__ModuleLoader__.load({
 .bili-btn:disabled{opacity:.45;cursor:not-allowed}
 .bili-qr{display:flex;flex-wrap:wrap;gap:14px;align-items:flex-start;margin:12px 0 4px;padding:12px;border:1px dashed var(--theme-border,#3d424a);border-radius:10px;background:rgba(127,127,127,.06)}
 .bili-qr.off{display:none}
-.bili-qr-img{width:184px;height:184px;padding:6px;background:#fff;border:1px solid var(--theme-border,#33363c);border-radius:8px;image-rendering:pixelated}
+.bili-qr-canvas,.bili-qr-img{padding:6px;background:#fff;border:1px solid var(--theme-border,#33363c);border-radius:8px;image-rendering:pixelated}
+.bili-qr-canvas{width:184px;height:184px}
+.bili-qr-img{width:184px;height:184px}
+.bili-hidden{display:none !important}
 .bili-qr-side{flex:1 1 240px;min-width:0}
 .bili-qr-state{margin:0 0 4px;font-weight:600}
 .bili-count,.bili-link{margin:0 0 4px;color:var(--theme-text-secondary,#8a9099);font-size:11px;word-break:break-all}
@@ -215,13 +220,16 @@ window.__ModuleLoader__.load({
 				const btnClear = el("button", "bili-btn ghost bili-btn-clear", tr("qr.clear"));
 				const btnRefresh = el("button", "bili-btn ghost bili-btn-refresh", tr("acct.refresh"));
 				const qrBox = el("div", "bili-qr off");
-				const qrImg = el("img", "bili-qr-img"); qrImg.alt = "B站 登录二维码";
+				const qrCanvas = el("canvas", "bili-qr-canvas bili-hidden");   // 主路：拿宿主随 start 给的位矩阵自己画，不发图片子资源请求（那条路能不能带上鉴权 cookie 各家浏览器不一样，没带就是一张裂图）
+				const qrImg = el("img", "bili-qr-img bili-hidden"); qrImg.alt = "B站 登录二维码";   // 备用路：只有画不了 canvas 才用
+				let lastQrUrl = "";
+				qrImg.addEventListener("error", () => setMsg(loginMsg, tr("qr.imgfail2", { url: lastQrUrl || "这条登录链接" }), "err"));
 				const qrSide = el("div", "bili-qr-side");
 				const qrState = el("p", "bili-qr-state", "");
 				const qrCountdown = el("p", "bili-count", "");
 				const qrLink = el("p", "bili-link", "");
 				qrSide.append(qrState, qrCountdown, qrLink);
-				qrBox.append(qrImg, qrSide);
+				qrBox.append(qrCanvas, qrImg, qrSide);
 				const loginMsg = el("p", "bili-msg", "");
 
 				/* ── ② 主人的搜索偏好 ── */
@@ -286,6 +294,21 @@ window.__ModuleLoader__.load({
 				const stopPoll = () => { if (pollTimer) { window.clearInterval(pollTimer); pollTimer = null; } };
 				const stopExpire = () => { if (expireTimer) { window.clearTimeout(expireTimer); expireTimer = null; } };
 				const showQr = (on) => { if (on) qrBox.classList.delete("off"); else qrBox.classList.add("off"); };
+				/** 用宿主给的位矩阵在 canvas 上画码：整数倍缩放 + 静区，不依赖图片请求与 cookie。画不出来回 false。 */
+				const drawQr = (modules) => {
+					const rows = String(modules || "").split("\n").map((r) => r.trim()).filter(Boolean);
+					if (!rows.length || rows.some((r) => r.length !== rows[0].length)) return false;
+					const n = rows.length;
+					const ctx = qrCanvas.getContext ? qrCanvas.getContext("2d") : null;
+					if (!ctx || typeof ctx.fillRect !== "function") return false;
+					const quiet = 4, scale = Math.max(2, Math.floor(184 / (n + quiet * 2))), px = (n + quiet * 2) * scale;
+					qrCanvas.width = px; qrCanvas.height = px;
+					qrCanvas.style.width = px + "px"; qrCanvas.style.height = px + "px";
+					ctx.fillStyle = "#fff"; ctx.fillRect(0, 0, px, px);
+					ctx.fillStyle = "#000";
+					for (let r = 0; r < n; r++) for (let c = 0; c < n; c++) if (rows[r][c] === "1") ctx.fillRect((c + quiet) * scale, (r + quiet) * scale, scale, scale);
+					return { px: px, n: n, scale: scale, dark: rows.reduce((a, r) => a + (r.split("1").length - 1), 0) };
+				};
 				const tickCountdown = () => {
 					if (!deadline) return;
 					const left = Math.max(0, Math.round((deadline - Date.now()) / 1000));
@@ -316,9 +339,11 @@ window.__ModuleLoader__.load({
 					setMsg(loginMsg, ""); stopPoll(); stopExpire(); qrState.textContent = ""; qrCountdown.textContent = ""; qrLink.textContent = "";
 					return api("/login/start", { method: "POST", body: JSON.stringify({}) }).then((d) => {
 						if (!d || d.ok === false) { setMsg(loginMsg, tr("qr.imgfail", { why: (d && d.qr_png && d.qr_png.failed) || (d && d.error) || "未知" }), "err"); return d; }
-						pollKey = d.key;
-						if (d.qr_png && d.qr_png.imageUrl) { qrImg.src = d.qr_png.imageUrl; showQr(true); }
-						else setMsg(loginMsg, tr("qr.imgfail", { why: (d.qr_png && d.qr_png.failed) || "没出图" }), "err");
+						pollKey = d.key; lastQrUrl = d.url || "";
+						const drew = d.qr_png && d.qr_png.modules ? drawQr(d.qr_png.modules) : false;
+						if (drew) { qrCanvas.classList.delete("bili-hidden"); qrImg.classList.add("bili-hidden"); showQr(true); }
+						else if (d.qr_png && d.qr_png.imageUrl) { qrImg.src = d.qr_png.imageUrl; qrImg.classList.delete("bili-hidden"); qrCanvas.classList.add("bili-hidden"); showQr(true); setMsg(loginMsg, tr("qr.matrixfallback"), ""); }
+						else { showQr(false); setMsg(loginMsg, tr("qr.imgfail", { why: (d.qr_png && d.qr_png.failed) || "没出图" }), "err"); }
 						qrState.textContent = tr("qr.waiting");
 						if (d.url) qrLink.textContent = tr("qr.link", { url: d.url });
 						deadline = Date.now() + (d.expiresInMs || EXPIRES_MS);

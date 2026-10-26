@@ -585,7 +585,8 @@ export function apply(ctx, config = {}) {
       for (const f of fs.readdirSync(qrDir)) { if (f === path.basename(pngPath)) continue; try { fs.rmSync(path.join(qrDir, f)) } catch { /* 别人正拿着就别删 */ } }
     } else log('二维码图没出成：' + qr.message + '（照样回 url，你可以自己打开）')
     loginStore.set(d.qrcode_key + ':png', pngPath)
-    return { key: d.qrcode_key, url: d.url, qr_png: qr.ok ? { path: pngPath, bytes: qr.png.length, dim: qr.dim, engine: qr.engine || 'qrpng(self)', ...(qr.fellback_from ? { fellback_from: qr.fellback_from } : {}) } : { failed: qr.message }, note: '手机 B站 → 我的 → 扫一扫；确认时选"记住我"那种长期登录。约 180 秒过期。图在 qr_png 那份（家目录 tmp-qr/，每次 start 只留最新一张）。' }
+    if (qr.ok && qr.modules) loginStore.set(d.qrcode_key + ':modules', { size: qr.size, engine: qr.engine || 'qrpng(self)', modules: qr.modules })
+    return { key: d.qrcode_key, url: d.url, qr_png: qr.ok ? { path: pngPath, bytes: qr.png.length, dim: qr.dim, size: qr.size, engine: qr.engine || 'qrpng(self)', modules: qr.modules || null, ...(qr.fellback_from ? { fellback_from: qr.fellback_from } : {}) } : { failed: qr.message }, note: '手机 B站 → 我的 → 扫一扫；确认时选"记住我"那种长期登录。约 180 秒过期。qr_png.modules 是那块位矩阵（界面直接照着画，不必再发一次图片请求）；PNG 那份存在家目录 tmp-qr/，每次 start 只留最新一张。' }
   }
   async function loginPoll(key) {
     if (!key) throw new Error('要传 bili_auth 之前给的 key')
@@ -1075,7 +1076,7 @@ export function apply(ctx, config = {}) {
               try {
                 const r = await loginStart()
                 const qr = r.qr_png && !r.qr_png.failed
-                  ? { file: r.qr_png.path ? path.basename(r.qr_png.path) : null, bytes: r.qr_png.bytes, dim: r.qr_png.dim, engine: r.qr_png.engine, imageUrl: '/api/dsh-bili-skill/login/qr?k=' + encodeURIComponent(r.key) }
+                  ? { file: r.qr_png.path ? path.basename(r.qr_png.path) : null, bytes: r.qr_png.bytes, dim: r.qr_png.dim, size: r.qr_png.size, engine: r.qr_png.engine, modules: r.qr_png.modules || null, imageUrl: '/api/dsh-bili-skill/login/qr?k=' + encodeURIComponent(r.key) }
                   : { failed: (r.qr_png && r.qr_png.message) || '两条路都没出图' }
                 return send(200, { ok: true, key: r.key, url: r.url, qr_png: qr, note: r.note, expiresInMs: 180000 })
               } catch (e) { return send(500, { ok: false, error: String(e?.message || e) }) }

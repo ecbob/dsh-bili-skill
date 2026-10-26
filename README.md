@@ -95,7 +95,7 @@ dsh plugin --profile <profile> add "<这颗 tgz 的绝对路径>"
 
 `client.js` 是这插件的**客户端那半个**（跑在 DSH 界面里，`package.json` 里用 `dsh.client` + `exports["./client"]` 声明），它往「设置」里挂一个 `settings.section` 分区，标题「B站 能力底座」，三块：
 
-1. **扫码登录** —— 点「出二维码」：宿主侧 `POST /login/start` 拿 `qrcode_key` 并出图，页面里的 `<img>` 直接指向 `GET /api/dsh-bili-skill/login/qr?k=…`（同源自动带鉴权 cookie，所以浏览器拿得到；那张图本身在家目录 `tmp-qr/`，每次只留最新一张）。之后每 4 秒自动 `POST /login/poll` 问一次，中间态分开显示：`86101` 未扫码 / `86090` 已扫码等手机点确认 / `86038` 已失效（要重新点出码）/ `data.code=0` 才算登录成功（落凭证、跟一次 crossDomain、`credential-source.json` 记成 `scan`）。另有「从别处抄一份凭证」（`/login/import`）与「删掉本机凭证」（`/login/clear`，带确认）。
+1. **扫码登录** —— 点「出二维码」：宿主侧 `POST /login/start` 拿 `qrcode_key`、出 PNG 存到家目录 `tmp-qr/`（每次只留最新一张），并把**位矩阵** `qr_png.modules`（每行一串 0/1）随 JSON 一起回；页面用 `<canvas>` 自己把这块矩阵画成码（整数倍缩放 + 静区）—— 不依赖"图片子资源请求能不能带上鉴权 cookie"那条运气（那条不通就是一张裂图，本机见过）。`GET /api/dsh-bili-skill/login/qr?k=…` 留着作备用路（矩阵缺失或这台环境没有 canvas 2D 时才用），它发的是 PNG，且 `k` 必须过形状校验、路径必须落在 `tmp-qr/` 里。两条路都不通就在界面上写明并给出可在手机上打开的链接，不静默留一张坏图。之后每 4 秒自动 `POST /login/poll`，中间态分开显示：`86101` 未扫码 / `86090` 已扫码等手机点确认 / `86038` 已失效（要重新出码，界面上另有倒计时）/ `data.code=0` 才算登录成功（落凭证、跟一次 crossDomain、`credential-source.json` 记成 `scan`）。另有「从别处抄一份凭证」（`/login/import`）与「删掉本机凭证」（`/login/clear`，带确认）。
 2. **主人的搜索偏好** —— 七个字段：排序（综合/最新/播放量/弹幕/收藏/评分）、每页条数（1–50）、只要最近 N 天（0=不限）、播放下限、时长上限（秒）、黑名单词（逗号分隔）、另写一句（最高优先）。点「保存偏好」→ `POST /search-prefs` → 夹范围、去重、只认白名单键，写进家目录 `config.json` 的 `searchPrefs`。旁边「看注入成什么样」直接给出**将来贴在说明书末尾的那段原文**（`GET /search-prefs` 的 `injected` 字段），所以你看到的和 agent 读到的是同一份。
 3. **现场** —— 插件版本、登录与否、家目录、快照文件路径、每张账本几行、说明书几份。
 
