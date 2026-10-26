@@ -748,7 +748,7 @@ const ac = mkCtxWithServer(); mod.apply(ac.ctx, { home: apiHome, logLevel: 'sile
   class FakeNode {
     constructor(tag) { this.tagName = String(tag).toUpperCase(); this.children = []; this._own = ''; this.style = {}; this.classList = new Set(); this._events = {}; this.parentNode = null; made.push(this) }
     set className(v) { this._cls = String(v); this.classList = new Set(String(v).split(/\s+/).filter(Boolean)) }
-    get className() { return this._cls || '' }
+    get className() { return Array.from(this.classList).join(' ') }
     set textContent(v) { this._own = String(v) }
     get textContent() { return this.children.length ? this._own + this.children.map((c) => c.textContent).join('') : this._own }
     addEventListener(ev, cb) { (this._events[ev] = this._events[ev] || []).push(cb) }
@@ -825,9 +825,15 @@ const ac = mkCtxWithServer(); mod.apply(ac.ctx, { home: apiHome, logLevel: 'sile
   const prefPre0 = made.find((n) => n.tagName === 'PRE')
   ok('偏好表单从宿主读回来的值填进去（不是硬编码缺省），预览区显示的就是那段末尾文字', prefOrderSel && prefOrderSel.value === 'stow' && /主人的搜索偏好/.test(String(prefPre0 && prefPre0.textContent)), JSON.stringify({ order: prefOrderSel && prefOrderSel.value, pre: String(prefPre0 && prefPre0.textContent).slice(0, 40) }))
   const btnStart = made.find((n) => n.tagName === 'BUTTON' && /出二维码/.test(String(n.textContent)))
-  btnStart.dispatch('click'); await tick(); await tick()
+  const qrBoxNode = made.find((n) => n.tagName === 'DIV' && String(n.className).split(/\s+/).includes('bili-qr'))
+  ok('没出码时二维码那块整块用 off 类藏着（不是留个坏 img 让人以为图裂了）', !!qrBoxNode && String(qrBoxNode.className).includes('off'), String(qrBoxNode && qrBoxNode.className))
+  btnStart.dispatch('click')
+  ok('点下去立刻禁掉「出二维码」并转圈等回话（连点不会叠出一堆码）', btnStart.disabled === true && String(qrBoxNode.className).includes('off'), JSON.stringify({ disabled: btnStart.disabled, cls: qrBoxNode.className }))
+  await tick(); await tick()
   const imgNode = made.find((n) => n.tagName === 'IMG' && String(n.src).includes('/login/qr'))
   ok('点「出二维码」真发 POST /login/start，并把 img.src 指到宿主发图那条路（浏览器同源自动带 cookie）', requests.includes('POST ' + clientApi + '/login/start') && !!imgNode && /k=abcdef/.test(String(imgNode.src)), JSON.stringify({ reqs: requests.slice(-2), src: imgNode && String(imgNode.src) }))
+  const cdLine = made.find((n) => n.className === 'bili-count'), linkLine = made.find((n) => n.className === 'bili-link')
+  ok('回话到了：按钮解禁、二维码区显形，并写明"剩余约 N 秒"和可在手机上打开的链接（不让人盯着静止的码猜）', btnStart.disabled === false && !String(qrBoxNode.className).includes('off') && /剩余约 \d+ 秒/.test(String(cdLine && cdLine.textContent)) && /手机上打开/.test(String(linkLine && linkLine.textContent)), JSON.stringify({ cls: qrBoxNode.className, cd: cdLine && cdLine.textContent, link: String(linkLine && linkLine.textContent).slice(0, 60) }))
   const pollTimer = timers.find((t) => t.kind === 'interval' && t.ms === cmod.__test__.POLL_MS)
   ok('出码后起了轮询定时器自动问结果（不靠人手点刷新）', !!pollTimer && pollTimer.cleared === false, JSON.stringify(timers.map((t) => [t.kind, t.ms])))
   pollTimer.fn(); await tick(); await tick()
@@ -838,15 +844,27 @@ const ac = mkCtxWithServer(); mod.apply(ac.ctx, { home: apiHome, logLevel: 'sile
   const area = made.find((n) => n.tagName === 'TEXTAREA')
   prefOrderSel.value = 'dm'; nums[0].value = '30'; nums[1].value = '7'; nums[2].value = '50'; nums[3].value = '900'; txt.value = '广告,搬运,搬运'; area.value = '只看实况解说'
   const btnSave = made.find((n) => n.tagName === 'BUTTON' && /保存偏好/.test(String(n.textContent)))
-  btnSave.dispatch('click'); await tick(); await tick()
+  btnSave.dispatch('click')
+  ok('点「保存偏好」期间按钮禁着（连点不会重复写盘）', btnSave.disabled === true, String(btnSave.disabled))
+  await tick(); await tick()
   const sentPref = bodies.filter((b) => b.key === 'POST ' + clientApi + '/search-prefs').pop()
   ok('点「保存偏好」发的是夹过的 searchPrefs 对象（不是裸表单值：逗号串已在客户端拆成数组）', !!sentPref && sentPref.body.searchPrefs.order === 'dm' && sentPref.body.searchPrefs.pageSize === 30 && JSON.stringify(sentPref.body.searchPrefs.excludeKeywords) === JSON.stringify(['广告', '搬运']) && sentPref.body.searchPrefs.notes === '只看实况解说', JSON.stringify(sentPref && sentPref.body))
   const msgs = made.filter((n) => String(n.className).includes('bili-msg')).map((n) => n.textContent).join(' § ')
   const prefPre = made.find((n) => n.tagName === 'PRE')
-  ok('保存成功后讲清"写进 config.json 的 searchPrefs、立即生效、不必重启"，预览跟着换成新的', /立即生效/.test(msgs) && /保存后的预览/.test(String(prefPre && prefPre.textContent)), JSON.stringify({ msgs: msgs.slice(0, 90), pre: String(prefPre && prefPre.textContent).slice(0, 40) }))
-  const viewLine = made.find((n) => String(n.className).includes('bili-view-line'))
-  const viewSnap = made.find((n) => String(n.className).includes('bili-view-snap'))
-  ok('现场卡片报的是插件版本 + 登录与否 + 家目录，并指明快照文件路径（判据不依赖 HTTP）', /0\.9\.0/.test(String(viewLine && viewLine.textContent)) && /status\.json/.test(String(viewSnap && viewSnap.textContent)), JSON.stringify({ line: String(viewLine && viewLine.textContent).slice(0, 80), snap: String(viewSnap && viewSnap.textContent).slice(0, 60) }))
+  ok('保存成功后讲清"写进 config.json 的 searchPrefs、立即生效、不必重启"，预览跟着换成新的，按钮恢复可用', btnSave.disabled === false && /立即生效/.test(msgs) && /保存后的预览/.test(String(prefPre && prefPre.textContent)), JSON.stringify({ msgs: msgs.slice(0, 90), pre: String(prefPre && prefPre.textContent).slice(0, 40) }))
+  const viewCard = made.filter((n) => n.tagName === 'SECTION')[2]
+  ok('现场卡片是 kv 两列排版，报插件版本 + 登录与否 + 家目录 + 快照路径（判现场不依赖 HTTP）', /0\.9\.0/.test(String(viewCard && viewCard.textContent)) && /status\.json/.test(String(viewCard && viewCard.textContent)) && made.filter((n) => n.className === 'k').length >= 5, JSON.stringify({ text: String(viewCard && viewCard.textContent).slice(0, 90), keys: made.filter((n) => n.className === 'k').length }))
+  const styleNode = made.find((n) => n.tagName === 'STYLE')
+  ok('这一页自带一份 style（宿主外壳没有 .bili-* 这些类，不带就是一堆裸控件叠在一起）', !!styleNode && styleNode.parentNode === pageNode && String(styleNode.textContent).includes('.bili-card{') && String(styleNode.textContent).includes('grid-template-columns') && String(styleNode.textContent).includes('.bili-qr.off'), JSON.stringify({ has: !!styleNode, head: String(styleNode && styleNode.textContent).slice(0, 40) }))
+  const cssText = String(styleNode && styleNode.textContent)
+  ok('样式只取宿主主题变量并带兜底色（深浅色都不塌），且没写死任何人的路径或账号名', (cssText.match(/--theme-[a-z-]+/g) || []).length >= 6 && !/C:\\\\Users|ECBob/.test(cssText) && cssText.startsWith('\n.bili-settings{'), JSON.stringify({ vars: (cssText.match(/--theme-[a-z-]+/g) || []).length }))
+  const formRows = made.filter((n) => String(n.className).startsWith('bili-row'))
+  const wideRows = formRows.filter((n) => String(n.className).includes('span2'))
+  ok('偏好表单是网格排版、每个控件都在自己标签下面（不再标签和输入横排挤一行）', formRows.length === 7 && formRows.every((r) => r.children[0] && r.children[0].className === 'bili-label') && wideRows.length === 2 && /黑名单词/.test(wideRows[0].textContent) && /另写一句/.test(wideRows[1].textContent), JSON.stringify({ rows: formRows.length, wide: wideRows.map((r) => r.textContent.slice(0, 6)) }))
+  const nums2 = made.filter((n) => n.tagName === 'INPUT' && n.type === 'number')
+  ok('数字框带 min/max/step：界面自己挡越界，跟宿主侧夹紧的是同一套范围', nums2.length === 4 && nums2.every((i) => i.min != null && i.max != null && i.step === '1'), JSON.stringify(nums2.map((i) => [i.min, i.max])))
+  ok('说明行与回话行各占自己的位置（note / msg 分开排队，不再叠在控件上）', made.filter((n) => n.className === 'bili-note').length >= 2 && made.filter((n) => String(n.className).includes('bili-msg')).length === 2, JSON.stringify({ notes: made.filter((n) => n.className === 'bili-note').length }))
+  ok('每个字段都有 title 提示（说不清参数的地方交给悬停，不塞进标签里挤排版）', made.filter((n) => String(n.className).includes('bili-input') && n.title).length === 7, JSON.stringify(made.filter((n) => String(n.className).includes('bili-input')).map((i) => [String(i.tagName), String(i.title || '').slice(0, 10)])))
   for (const c of cleanups) c()
   for (const d of disposers) d()
   ok('卸载干净：定时器全停、页面从那个 div 上摘下来（渲染的清理归 useEffect，注册的归 disposer）', timers.every((t) => t.cleared) && !node.children.includes(pageNode), JSON.stringify(timers.map((t) => [t.kind, t.ms, t.cleared])))
