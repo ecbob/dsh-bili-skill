@@ -712,7 +712,7 @@ export function apply(ctx, config = {}) {
       at: { type: 'array', items: { type: 'number' }, description: '要哪几秒（相对所选 P 的起点，就近贴格）；不传就在有内容的格里均匀取' },
       tiles: { type: 'array', items: { type: 'integer' }, description: '直接按格号点格（0 起，相对所选 P 的故事板）；与 at 同时给时格号优先 —— 想要某一格就别去换算秒，本机实测换算会贴错' },
       p: { type: 'integer', description: '哪个分 P；不给且给了 at 就自动选装得下这些秒的那段，否则取 P1' },
-      hd: { type: 'boolean', description: 'true = 再用外部 ffmpeg 解视频流抽同一秒的高清帧（按关键帧定位）；没 ffmpeg 或抽不动就在 hd_error 里说明，仍回故事板裁的格子帧' },
+      hd: { type: 'boolean', description: 'true = 再用外部 ffmpeg 解视频流抽同一秒的高清帧（默认逐帧精确：-ss 放在 -i 之后；解不动才退回关键帧法），真口径以每帧回报的 hd.method 为准；没 ffmpeg 或抽不动就在 hd_error 里说明，仍回故事板裁的格子帧' },
     },
     output: { schema: { type: 'object', properties: {}, additionalProperties: true }, render: (_a, v) => __renderWithImages(v) },
     execute: async (args, exec) => {
@@ -739,7 +739,7 @@ export function apply(ctx, config = {}) {
       scope: str('clear 删哪一类：temp（默认，不动留下的帧）| keep | all'),
       olderThanDays: { type: 'integer', description: 'clear 只删早于这么多天生成的文件（默认不限）' },
       keepLast: { type: 'integer', description: 'clear 时至少保住最近这么多个文件不动（默认 0 = 按条件清干净）' },
-      hd: { type: 'boolean', description: 'keep 时 true = 留高清解码帧（ffmpeg 按关键帧抽的）而不是故事板格子帧；账本里 method 会写明是哪一种' },
+      hd: { type: 'boolean', description: 'keep 时 true = 留高清解码帧（外部 ffmpeg 解视频流抽的，默认逐帧精确）而不是故事板格子帧；账本里 method 会写明是哪一种' },
     },
     output: { schema: { type: 'object', properties: {}, additionalProperties: true }, render: (_a, v) => __renderWithImages(v) },
     execute: async (args, exec) => {
