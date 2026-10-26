@@ -679,8 +679,7 @@ export function apply(ctx, config = {}) {
         const probeUrl = 'https://api.bilibili.com/x/web-interface/card?mid=443924958'
         const raw = await rawCall(probeUrl)
         const saved = lc.maxBytes
-        const shrunk = await rawCall(probeUrl, { maxBytesOverride: 400 })
-        return { ok: true, message: `config 现读自检 ⟨config.json=${fs.readFileSync(path.join(home, 'config.json'), 'utf8').replace(/\s+/g, ' ')} → 现读 maxBytes=${saved}（挂载快照 ${cfg.maxBytes}）｜探针：文本 ${raw.textLen} 字、实际用的上限 ${raw.capUsed}、截了吗 ${raw.capUsed < raw.textLen}｜强制 400：文本 ${shrunk.textLen} 字、实际用的上限 ${shrunk.capUsed}、截了吗 ${shrunk.capUsed < shrunk.textLen}、能不能 parse ${shrunk.json !== undefined}⟩`, home, cfgFile: path.join(home, 'config.json'), live_maxBytes: saved, live_uidTtlDays: lc.uidTtlDays, mounted_maxBytes: cfg.maxBytes, probe_textLen: raw.textLen, probe_capUsed: raw.capUsed, probe_truncated: raw.capUsed < raw.textLen, shrunk_textLen: shrunk.textLen, shrunk_capUsed: shrunk.capUsed, shrunk_truncated: shrunk.capUsed < shrunk.textLen, shrunk_parsed: shrunk.json !== undefined, cfgFileText: fs.readFileSync(path.join(home, 'config.json'), 'utf8') }
+        return { ok: true, message: `config 现读自检 ⟨config.json=${fs.readFileSync(path.join(home, 'config.json'), 'utf8').replace(/\s+/g, ' ')} → 现读 maxBytes=${saved}（挂载快照 ${cfg.maxBytes}）｜探针：文本 ${raw.textLen} 字、实际用的上限 ${raw.capUsed}、截了吗 ${raw.capUsed < raw.textLen}⟩`, home, cfgFile: path.join(home, 'config.json'), live_maxBytes: saved, live_uidTtlDays: lc.uidTtlDays, mounted_maxBytes: cfg.maxBytes, probe_textLen: raw.textLen, probe_capUsed: raw.capUsed, probe_truncated: raw.capUsed < raw.textLen, cfgFileText: fs.readFileSync(path.join(home, 'config.json'), 'utf8') }
       }
       if (a === 'uid') { const n = String(args?.name || '').trim(); if (!n) throw new Error('action=uid 要传 name'); return { ok: true, ...await resolveUid(n) } }
       const w = await whoami()
@@ -943,6 +942,7 @@ export function apply(ctx, config = {}) {
   log(`已挂载（家=${home}，工具 ${registered} 只，skill ${buildCandidates().length} 份，凭证=${readCred()?.sessdata ? '有' : '无'}）`)
 }
 const PKG = JSON.parse(fs.readFileSync(path.join(here, 'package.json'), 'utf8'))
+
 
 
 
