@@ -685,9 +685,8 @@ export function apply(ctx, config = {}) {
       }
       if (a === 'uid') { const n = String(args?.name || '').trim(); if (!n) throw new Error('action=uid 要传 name'); return { ok: true, ...await resolveUid(n) } }
       const w = await whoami()
-      const __lc3 = liveCfg()
       const srcNow = (() => { try { return JSON.parse(fs.readFileSync(path.join(home, 'credential-source.json'), 'utf8'))?.source || 'unknown' } catch { return 'unknown' } })()   // 现读：挂载时的快照会在扫码写入后仍然报 unknown
-      return { ok: true, ...w, message: `${w.message} ⟨config 现读: maxBytes=${__lc3.maxBytes} uidTtl=${__lc3.uidTtlDays} frames=${__lc3.framesDefault} gaia=${__lc3.gaia} ‖挂载快照 maxBytes=${cfg.maxBytes} ‖家=${home}⟩`, home, credentialFile: credFile, imported: srcNow === 'import', credentialSource: srcNow }
+      return { ok: true, ...w, home, credentialFile: credFile, imported: srcNow === 'import', credentialSource: srcNow }
     },
     presentCall: (args) => ({ card: 'generic', title: `bili_auth ${args?.action || 'status'}`, kind: 'execute', rawInput: args?.action || 'status' }),
   })
@@ -945,4 +944,5 @@ export function apply(ctx, config = {}) {
   log(`已挂载（家=${home}，工具 ${registered} 只，skill ${buildCandidates().length} 份，凭证=${readCred()?.sessdata ? '有' : '无'}）`)
 }
 const PKG = JSON.parse(fs.readFileSync(path.join(here, 'package.json'), 'utf8'))
+
 
