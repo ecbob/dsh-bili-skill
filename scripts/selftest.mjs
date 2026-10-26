@@ -747,10 +747,25 @@ const ac = mkCtxWithServer(); mod.apply(ac.ctx, { home: apiHome, logLevel: 'sile
   const savedWin = globalThis.window, savedDoc = globalThis.document, savedFetch = globalThis.fetch
   const tick = () => new Promise((r) => setImmediate(r))
   const made = []
+  // classList 照真浏览器做成 DOMTokenList（_cls 是唯一真相），故意不给它 Set 的 delete —— 本机栽过：
+  // 假 DOM 用的是 Set，于是 client.js 里那句 classList.delete("off") 在自检里全绿，真浏览器却 TypeError。
+  class FakeTokenList {
+    constructor(node) { this.node = node }
+    _set() { return new Set(String(this.node._cls || '').split(/\s+/).filter(Boolean)) }
+    _write(s) { this.node._cls = Array.from(s).join(' ') }
+    add(...cs) { const s = this._set(); for (const c of cs) if (c) s.add(String(c)); this._write(s) }
+    remove(...cs) { const s = this._set(); for (const c of cs) s.delete(String(c)); this._write(s) }
+    toggle(c, force) { const s = this._set(); const has = s.has(String(c)); const on = force === undefined ? !has : !!force; if (on) s.add(String(c)); else s.delete(String(c)); this._write(s); return on }
+    contains(c) { return this._set().has(String(c)) }
+    replace(a, b) { const s = this._set(); if (!s.delete(String(a))) return false; s.add(String(b)); this._write(s); return true }
+    item(i) { return Array.from(this._set())[i] ?? null }
+    toString() { return this.node._cls || '' }
+  }
   class FakeNode {
-    constructor(tag) { this.tagName = String(tag).toUpperCase(); this.children = []; this._own = ''; this.style = {}; this.classList = new Set(); this._events = {}; this.parentNode = null; made.push(this) }
-    set className(v) { this._cls = String(v); this.classList = new Set(String(v).split(/\s+/).filter(Boolean)) }
-    get className() { return Array.from(this.classList).join(' ') }
+    constructor(tag) { this.tagName = String(tag).toUpperCase(); this.children = []; this._own = ''; this._cls = ''; this.style = {}; this._events = {}; this.parentNode = null; made.push(this) }
+    get classList() { return this._cl || (this._cl = new FakeTokenList(this)) }
+    set className(v) { this._cls = String(v) }
+    get className() { return this._cls }
     set textContent(v) { this._own = String(v) }
     get textContent() { return this.children.length ? this._own + this.children.map((c) => c.textContent).join('') : this._own }
     addEventListener(ev, cb) { (this._events[ev] = this._events[ev] || []).push(cb) }
@@ -760,6 +775,10 @@ const ac = mkCtxWithServer(); mod.apply(ac.ctx, { home: apiHome, logLevel: 'sile
     removeChild(n) { const i = this.children.indexOf(n); if (i >= 0) this.children.splice(i, 1); if (n) n.parentNode = null; return n }
     getContext(kind) { if (String(kind) !== '2d') return null; if (!this._ctx) { const calls = []; this._ctx = { fillStyle: '', calls, fillRect: (x, y, w, h) => calls.push([x, y, w, h, this._ctx.fillStyle]) } } return this._ctx }
   }
+  ok('假 DOM 不许比真浏览器宽松：DOMTokenList 只有 add/remove/toggle/contains/replace/item，就是没有 Set 的那个 delete', typeof new FakeNode('div').classList.delete === 'undefined' && typeof new FakeNode('div').classList.remove === 'function' && typeof new FakeNode('div').classList.purge === 'undefined', JSON.stringify(Object.keys(new FakeNode('div').classList)))
+  const clientSource = fs.readFileSync(path.join(pkgDir, 'client.js'), 'utf8')
+  ok('客户端源码里没调过非标准的 classList 方法（这就是本机"点了按钮一直灰、图也没来"的真因：当时假 DOM 有 .delete，自检全绿而真浏览器 TypeError）', !/classList\s*\.\s*(delete|purge)\s*\(/.test(clientSource) && /classList\s*\.\s*remove\s*\(/.test(clientSource), JSON.stringify((clientSource.match(/classList\s*\.\s*\w+/g) || []).filter((x, i, arr) => arr.indexOf(x) === i)))
+  ok('同步抛错也不许把按钮卡成永久灰：withBusy 先接住再报文案（本机那次就是炸在 fetch 之前，请求压根没发出去）', /try \{ p = Promise.resolve\(fn\(\)\)/.test(clientSource) && /\.catch\(\(e\) =>/.test(clientSource), JSON.stringify((clientSource.match(/withBusy = \(btn, fn[^)]*\)/g) || []).slice(0, 2)))
   let hookSlots = [], hookIdx = 0, pendingEffects = []
   const fakeReact = {
     createElement(type, props, ...children) {
@@ -874,6 +893,12 @@ const ac = mkCtxWithServer(); mod.apply(ac.ctx, { home: apiHome, logLevel: 'sile
   ok('数字框带 min/max/step：界面自己挡越界，跟宿主侧夹紧的是同一套范围', nums2.length === 4 && nums2.every((i) => i.min != null && i.max != null && i.step === '1'), JSON.stringify(nums2.map((i) => [i.min, i.max])))
   ok('说明行与回话行各占自己的位置（note / msg 分开排队，不再叠在控件上）', made.filter((n) => n.className === 'bili-note').length >= 2 && made.filter((n) => String(n.className).includes('bili-msg')).length === 2, JSON.stringify({ notes: made.filter((n) => n.className === 'bili-note').length }))
   ok('每个字段都有 title 提示（说不清参数的地方交给悬停，不塞进标签里挤排版）', made.filter((n) => String(n.className).includes('bili-input') && n.title).length === 7, JSON.stringify(made.filter((n) => String(n.className).includes('bili-input')).map((i) => [String(i.tagName), String(i.title || '').slice(0, 10)])))
+  globalThis.document = { createElement: (tag) => { if (String(tag) === 'canvas') throw new Error('故意炸一下'); return new FakeNode(tag) }, body: new FakeNode('body') }
+  hookSlots = []; hookIdx = 0; pendingEffects = []
+  reg.component()
+  for (const f of pendingEffects.splice(0)) { const c = f(); if (typeof c === 'function') cleanups.push(c) }
+  const fatal = made.find((n) => String(n.className).includes('bili-fatal'))
+  ok('这一页真建不起来时不留一片空白：原位写「这一页没建起来：…」并把原因带上（工具与说明书照旧不受影响）', !!fatal && /这一页没建起来/.test(String(fatal.textContent)) && /故意炸一下/.test(String(fatal.textContent)) && /不受影响/.test(String(fatal.textContent)), String(fatal && fatal.textContent).slice(0, 140))
   for (const c of cleanups) c()
   for (const d of disposers) d()
   ok('卸载干净：定时器全停、页面从那个 div 上摘下来（渲染的清理归 useEffect，注册的归 disposer）', timers.every((t) => t.cleared) && !node.children.includes(pageNode), JSON.stringify(timers.map((t) => [t.kind, t.ms, t.cleared])))

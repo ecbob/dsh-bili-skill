@@ -41,6 +41,7 @@ window.__ModuleLoader__.load({
 		const T = {
 			"nav.title": "B站 能力底座",
 			"page.hint": "扫码登录，以及设定主人自己的搜索偏好。偏好会被注入到 bili-search 说明书的最末尾（只有 agent 调用那份说明书之后才读得到），改完立即生效，不必重启。",
+			"page.fatal": "这一页没建起来：{error}（插件的工具与说明书不受影响；把这句贴给维护者就能定位。）",
 			"card.login": "扫码登录",
 			"acct.online": "已登录：{name}（UID {uid}，等级 {level}，凭证来源 {source}）",
 			"acct.offline": "未登录 —— 本机没有凭证文件，出码扫一次即可。",
@@ -204,6 +205,7 @@ window.__ModuleLoader__.load({
 			React.useEffect(() => {
 				const host = hostRef.current || (typeof document !== "undefined" ? document.body : null);
 				if (!host) return;
+				try {
 
 				const el = (tag, cls, text) => { const n = document.createElement(tag); if (cls) n.className = cls; if (text != null) n.textContent = String(text); return n; };
 				const head = (title, sub) => { const h = el("div", "bili-card-head"); h.append(el("h3", null, title)); if (sub) h.append(el("span", "bili-sub", sub)); return h; };
@@ -289,11 +291,18 @@ window.__ModuleLoader__.load({
 
 				/* ── 行为 ── */
 				let pollKey = null, pollTimer = null, expireTimer = null, deadline = 0;
-				const setMsg = (node, text, kind) => { node.textContent = String(text || ""); node.classList.delete("err"); node.classList.delete("ok"); if (kind) node.classList.add(kind); };
-				const withBusy = (btn, fn) => { btn.disabled = true; Promise.resolve(fn()).finally(() => { btn.disabled = false }); };
+				const setMsg = (node, text, kind) => { node.textContent = String(text || ""); node.classList.remove("err"); node.classList.remove("ok"); if (kind) node.classList.add(kind); };
+				/** 请求在飞时禁掉按钮；**同步炸也要解禁并把原因写到界面上**（本机栽过一次：假 DOM 的 classList 上有 .delete，真浏览器没有 ⇒ 抛出后按钮永远灰着、请求压根没发出去）。 */
+				const withBusy = (btn, fn, report) => {
+					btn.disabled = true;
+					let p;
+					try { p = Promise.resolve(fn()); } catch (e) { p = Promise.reject(e); }
+					return p.catch((e) => { if (report) report(e); else setMsg(loginMsg, tr("err.net", { error: String((e && e.message) || e) }), "err"); })
+						.finally(() => { btn.disabled = false; });
+				};
 				const stopPoll = () => { if (pollTimer) { window.clearInterval(pollTimer); pollTimer = null; } };
 				const stopExpire = () => { if (expireTimer) { window.clearTimeout(expireTimer); expireTimer = null; } };
-				const showQr = (on) => { if (on) qrBox.classList.delete("off"); else qrBox.classList.add("off"); };
+				const showQr = (on) => { if (on) qrBox.classList.remove("off"); else qrBox.classList.add("off"); };
 				/** 用宿主给的位矩阵在 canvas 上画码：整数倍缩放 + 静区，不依赖图片请求与 cookie。画不出来回 false。 */
 				const drawQr = (modules) => {
 					const rows = String(modules || "").split("\n").map((r) => r.trim()).filter(Boolean);
@@ -341,8 +350,8 @@ window.__ModuleLoader__.load({
 						if (!d || d.ok === false) { setMsg(loginMsg, tr("qr.imgfail", { why: (d && d.qr_png && d.qr_png.failed) || (d && d.error) || "未知" }), "err"); return d; }
 						pollKey = d.key; lastQrUrl = d.url || "";
 						const drew = d.qr_png && d.qr_png.modules ? drawQr(d.qr_png.modules) : false;
-						if (drew) { qrCanvas.classList.delete("bili-hidden"); qrImg.classList.add("bili-hidden"); showQr(true); }
-						else if (d.qr_png && d.qr_png.imageUrl) { qrImg.src = d.qr_png.imageUrl; qrImg.classList.delete("bili-hidden"); qrCanvas.classList.add("bili-hidden"); showQr(true); setMsg(loginMsg, tr("qr.matrixfallback"), ""); }
+						if (drew) { qrCanvas.classList.remove("bili-hidden"); qrImg.classList.add("bili-hidden"); showQr(true); }
+						else if (d.qr_png && d.qr_png.imageUrl) { qrImg.src = d.qr_png.imageUrl; qrImg.classList.remove("bili-hidden"); qrCanvas.classList.add("bili-hidden"); showQr(true); setMsg(loginMsg, tr("qr.matrixfallback"), ""); }
 						else { showQr(false); setMsg(loginMsg, tr("qr.imgfail", { why: (d.qr_png && d.qr_png.failed) || "没出图" }), "err"); }
 						qrState.textContent = tr("qr.waiting");
 						if (d.url) qrLink.textContent = tr("qr.link", { url: d.url });
@@ -403,6 +412,14 @@ window.__ModuleLoader__.load({
 					window.clearInterval(timer); stopPoll(); stopExpire();
 					if (page.parentNode) page.parentNode.removeChild(page);
 				};
+				} catch (e) {
+					// 这一页建不起来时别再留一片空白：原位写一句话，把原因交给人（贴给维护者就能定位）
+					const why = document.createElement("p");
+					why.className = "bili-msg bili-fatal err";
+					why.textContent = tr("page.fatal", { error: String((e && e.message) || e) });
+					try { host.appendChild(why); } catch { /* 连一句话都写不上就算了 */ }
+					return () => { if (why.parentNode) why.parentNode.removeChild(why); };
+				}
 			}, []);
 			return React.createElement("div", { className: "bili-settings-host", ref: hostRef });
 		}
