@@ -4,7 +4,7 @@
  * 设计（2026-10-25，与 c1overzz/dsh-bili-scroll 并存、互不抢地盘）：
  *   base 只管四件事：① 登录与凭证 ② 身份（昵称 ↔ UID）③ 一条带 Cookie/CSRF/WBI 签名的通用 API 通道
  *   ④ 记账。能力面（搜索筛选 / 看画面理解 / 评论 / 读私信 / 写私信 / 记账）是**六份 SKILL.md**，
- *   按需加载 —— 常驻的工具声明只有 4 只，这正合本地模型「少声明、按需取说明书」的取向。
+ *   按需加载 —— 常驻的工具声明只有 5 只，这正合本地模型「少声明、按需取说明书」的取向。
  *   没有值班轮、没有定时器、没有日报、没有专用 profile，也不碰 bili-scroll 的家目录。
  *
  * 家目录（全在这一个目录里，删掉即彻底回滚）：
@@ -215,7 +215,7 @@ const CRED_IMPORT_SOURCES = ['../bili-duty', '../../bili-duty']
 
 const DEFAULTS = {
   home: '', requestTimeoutMs: 12000, maxBytes: 262144, framesDefault: 3,
-  autoImportCredential: true, uidTtlDays: 7, logLevel: 'info', watchSkills: false, gaia: false,
+  autoImportCredential: true, uidTtlDays: 7, logLevel: 'info', watchSkills: false, gaia: false, ffmpegPath: '',                       // 空 = 自动找（DSH_BILI_FFMPEG → PATH → 家目录旁 .dsh/.build-tools/ffmpeg/ffmpeg.exe）
 }
 
 /** patch config + 家里 config.json 的合并（家里优先；空值不覆盖 —— 与 bili-scroll 同一口径） */
@@ -255,6 +255,8 @@ export function apply(ctx, config = {}) {
   const logFile = path.join(home, 'base.log')
   for (const d of [home, ledgerDir, framesDir]) { try { fs.mkdirSync(d, { recursive: true }) } catch { /* 有了 */ } }
 
+  // 要用的时候现读 config.json（本机实测：改完 ffmpegPath 后不重启、宿主也没重组，挂着的实例还拿旧值 ⇒ 高清帧验不通）
+  const liveCfg = () => { try { return { ...cfg, ...JSON.parse(fs.readFileSync(path.join(home, 'config.json'), 'utf8')) } } catch { return cfg } }
   const log = (m) => {
     try { fs.appendFileSync(logFile, `${new Date().toISOString()}  ${m}\n`, 'utf8') } catch { /* 日志写不进也别炸 */ }
     if (cfg.logLevel !== 'silent') { try { ctx.logger?.[cfg.logLevel === 'debug' ? 'debug' : 'info']?.(`[bili-base] ${m}`) } catch { /* 没 logger 就算了 */ } }
@@ -523,7 +525,7 @@ export function apply(ctx, config = {}) {
     return { ok: true, table: t, total: all.length, rows: all.slice(-n), file: tableFile(t) }
   }
 
-  // ───────────────────────── 工具（只有这 4 只常驻声明） ─────────────────────────
+  // ───────────────────────── 工具（只有这 5 只常驻声明） ─────────────────────────
   const render = (_a, v) => [{ type: 'text', text: JSON.stringify(v, null, 2) }]
   // 输出 schema 只钉 ok / message 这两个必有字段、且不写 required：宿主会拿这份 schema **严格校验** execute 的返回值，
   // 而 uid / uname / data / rows / frames 这些都可能回 null 或自由形状 —— 给它们钉死 type 就会被判 "returned invalid output"。
@@ -621,12 +623,13 @@ export function apply(ctx, config = {}) {
       num: { type: 'integer', description: '取几帧（1-12，默认取插件配置 framesDefault）' },
       at: { type: 'array', items: { type: 'number' }, description: '要哪几秒（相对所选 P 的起点）；不传就在有内容的格里均匀取' },
       p: { type: 'integer', description: '哪个分 P；不给且给了 at 就自动选装得下这些秒的那段，否则取 P1' },
+      hd: { type: 'boolean', description: 'true = 再用外部 ffmpeg 解视频流抽同一秒的高清帧（按关键帧定位）；没 ffmpeg 或抽不动就在 hd_error 里说明，仍回故事板裁的格子帧' },
     },
     output: { schema: { type: 'object', properties: {}, additionalProperties: true }, render: (_a, v) => __renderWithImages(v) },
     execute: async (args, exec) => {
       try {
-        const r = await shoot({ call, log, framesDir, UA, REFERER, timeoutMs: cfg.requestTimeoutMs }, args || {})
-        const imgs = (r.frames || []).map((f) => ({ buffer: fs.readFileSync(f.path), mediaType: /\.png$/i.test(f.path) ? 'image/png' : 'image/jpeg' }))
+        const r = await shoot({ call, log, framesDir, UA, REFERER, home, ffmpegPath: liveCfg().ffmpegPath, hd: args?.hd === true, timeoutMs: liveCfg().requestTimeoutMs }, args || {})
+        const imgs = (r.frames || []).map((f) => { const src = (f.hd && f.hd.path) || f.path; return { buffer: fs.readFileSync(src), mediaType: /\.png$/i.test(src) ? 'image/png' : 'image/jpeg' } })
         const a = imgs.length ? await __attachImages((k) => ctx.get?.(k), exec, imgs) : { ok: false, reason: 'no_frames', hint: '这一条没有可附的帧' }
         return { ok: true, ...r, image_attached: a.ok, ...(a.ok ? { images: a.refs } : { image_skip_reason: a.reason, hint: a.hint }) }
       } catch (e) { return { ok: false, message: String(e?.message || e) } }
@@ -646,6 +649,7 @@ export function apply(ctx, config = {}) {
       scope: str('clear 删哪一类：temp（默认，不动留下的帧）| keep | all'),
       olderThanDays: { type: 'integer', description: 'clear 只删早于这么多天生成的文件（默认不限）' },
       keepLast: { type: 'integer', description: 'clear 时至少保住最近这么多个文件不动（默认 0 = 按条件清干净）' },
+      hd: { type: 'boolean', description: 'keep 时 true = 留高清解码帧（ffmpeg 按关键帧抽的）而不是故事板格子帧；账本里 method 会写明是哪一种' },
     },
     output: { schema: { type: 'object', properties: {}, additionalProperties: true }, render: (_a, v) => __renderWithImages(v) },
     execute: async (args, exec) => {
@@ -655,23 +659,28 @@ export function apply(ctx, config = {}) {
         if (act === 'clear') return clearFrames(framesDir, { scope: args?.scope || 'temp', olderThanDays: args?.olderThanDays, keepLast: args?.keepLast })
         if (act !== 'keep') return { ok: false, message: `action 只认 keep / clear / list，收到的是「${args?.action}」` }
         if (!args?.bvid) return { ok: false, message: 'keep 要 bvid（哪条视频的画面）' }
-        const r = await shoot({ call, log, framesDir, UA, REFERER, timeoutMs: cfg.requestTimeoutMs }, args)
+        const r = await shoot({ call, log, framesDir, UA, REFERER, home, ffmpegPath: liveCfg().ffmpegPath, hd: args?.hd === true, timeoutMs: liveCfg().requestTimeoutMs }, args)
         if (!r.ok || !(r.frames || []).length) return { ok: false, message: `留帧没成功：${r.message || '一格都没裁出来'}`, detail: r }
         fs.mkdirSync(path.join(framesDir, 'keep'), { recursive: true })
         const kept = []
         for (const f of r.frames) {
-          const to = path.join(framesDir, frameFileName(String(args.bvid), f.p, f.tile, f.at, 'jpg', true))
-          fs.copyFileSync(f.path, to)
-          kept.push({ ...f, file: `keep/${path.basename(to)}`, path: to, kept: true })
+          const stamp = (() => { const d = new Date(), q = (n) => String(n).padStart(2, '0'); return `${d.getFullYear()}${q(d.getMonth() + 1)}${q(d.getDate())}-${q(d.getHours())}${q(d.getMinutes())}${q(d.getSeconds())}` })()
+          const to = path.join(framesDir, frameFileName(String(args.bvid), f.p, f.tile, f.at, 'jpg', true, stamp))
+          fs.copyFileSync((args.hd === true && f.hd && f.hd.path) ? f.hd.path : f.path, to)
+          kept.push({ ...f, file: `keep/${path.basename(to)}`, path: to, kept: true, marked: `第 ${f.tile} 格（P${f.p} ${f.at}~${f.atTo}s，格内平均亮度 ${f.lum ?? '?'}，留的是 ${f.hd ? 'ffmpeg 解出来的 ' + f.hd.width + 'x' + f.hd.height + ' 高清帧（按关键帧定位）' : '故事板格子帧 ' + f.width + 'x' + f.height}）` })
         }
+
+          const rows = kept.map((f2) => ({ file: f2.file, bvid: String(args.bvid), p: f2.p, tile: f2.tile, at: f2.at, atTo: f2.atTo, lum: f2.lum ?? null, width: f2.width, height: f2.height, bytes: (f2.hd && f2.hd.bytes) || f2.bytes, method: f2.hd ? f2.hd.method : 'videoshot-crop', hd_stream: f2.hd ? f2.hd.stream : null, hd_error: f2.hd_error || null, pixels: f2.hd ? `${f2.hd.width}x${f2.hd.height}` : `${f2.width}x${f2.height}`, marked: f2.marked, reason: String(args.reason || '') }))
+          let booked = null
+          try { booked = ledger({ action: 'append', table: 'frame', key: 'file', rows }) } catch (e) { booked = { ok: false, message: String(e?.message || e) } }
         const imgs = kept.map((f) => ({ buffer: fs.readFileSync(f.path), mediaType: 'image/jpeg' }))
         const a = await __attachImages((k) => ctx.get?.(k), exec, imgs)
         return {
           ok: true, bvid: String(args.bvid), p: r.partIndex, part: r.part, partDuration: r.partDuration, partStart: r.partStart,
-          intervalSec: r.intervalSec, intervalBasis: r.intervalBasis, grid: r.grid, kept,
+          intervalSec: r.intervalSec, intervalBasis: r.intervalBasis, grid: r.grid, kept, ledger: booked,
           ...(a.ok ? { image_attached: true, images: a.refs } : { image_attached: false, image_skip_reason: a.reason, hint: a.hint }),
           note: `已裁成单独一帧存在 frames/keep/（${kept.length} 张，framesClear 默认不碰）。${args.reason ? `理由：${args.reason}。` : ''}` +
-            '要长期记得为什么留：bili_ledger {action:"append", table:"frame", key:"file", rows:[{file,bvid,p,at,reason}]}。',
+            '与记账联动：已自动往 ledger/frame 追加（去重键 file），每行带 file/bvid/p/tile/at/atTo/lum/width/height/bytes/method/marked/reason —— marked 写的就是这一格被判定了什么。',
         }
       } catch (e) { return { ok: false, message: String(e?.message || e) } }
     },
@@ -829,6 +838,6 @@ export function apply(ctx, config = {}) {
     w.effect(() => (typeof off === 'function' ? off : () => {}), 'bili-base: status route')
   })
 
-  log(`已挂载（家=${home}，工具 ${registered}/4 只，skill ${buildCandidates().length} 份，凭证=${readCred()?.sessdata ? '有' : '无'}）`)
+  log(`已挂载（家=${home}，工具 ${registered} 只，skill ${buildCandidates().length} 份，凭证=${readCred()?.sessdata ? '有' : '无'}）`)
 }
 const PKG = JSON.parse(fs.readFileSync(path.join(here, 'package.json'), 'utf8'))

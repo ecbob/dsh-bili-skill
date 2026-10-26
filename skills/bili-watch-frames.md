@@ -38,9 +38,8 @@ bili_frames {action:"clear", scope?:'temp'|'keep'|'all', olderThanDays?, keepLas
 
 - **值不值得留由你判断**：默认取帧（`bili_shot`）落的是临时帧，看完就该 `clear` 收掉；只有"以后还要用这张"的才 `keep`，并在 `reason` 里写清为什么（例如"P1 第 40 格：结算面板血量数字可读"）。
 - `clear` 默认 `scope:"temp"` —— **只删临时取帧，`keep/` 里的一律不动**；要连留下的一起删就明说 `scope:"all"`。可以 `olderThanDays` 只清旧的、`keepLast` 保住最新几个。
-- 留下的帧要**记一行账**（文件是本机的，账才是跨会话的记忆）：
-  `bili_ledger {action:"append", table:"frame", key:"file", rows:[{file,bvid,p,tile,at,bytes,reason}]}`
-- 说"看不清"就如实说：格子只有 480x270，小字糊就别替它把数字敲定。
+- **`keep` 与记账是联动的**：每留一帧，工具**自己**往 `ledger/frame` 追加一行（去重键 `file`），字段有 `file/bvid/p/tile/at/atTo/lum/width/height/bytes/cid/reason/marked` —— 其中 `marked` 写的是"这一格被判定了什么"（例：`第 0 格（P1 0~4.06s，格内平均亮度 82.9）`），`reason` 是你为什么留它。,- 留下的文件名带**年月日时分秒**：`keep/<bvid>-p<P>-<格号>-<秒>s-<YYYYMMDD-HHMMSS>.jpg` ⇒ 同一格重复留也不会互相覆盖，账本里每一行都指得到一个具体文件。,- 别只在会话里口头说"我留了"：`list` 能核对文件真在、`bili_ledger {action:"read", table:"frame"}` 能核对账真记了。
+- 说"看不清"就如实说：格子只有 480x270，小字糊就别替它把数字敲定。,- 每帧带 `lum`（格内平均亮度 0~255）：**黑场/淡出就是 lum≈0**，别把它当"这段没画面"下结论，也别把重要东西留在一格 lum≈0 的帧上。
 
 ## 怎么判断它真在看图、而不是在编
 
@@ -71,3 +70,17 @@ bili_frames {action:"clear", scope?:'temp'|'keep'|'all', olderThanDays?, keepLas
 **缓存边界**：正文每次现读磁盘 ⇒ 改 md 的正文立刻生效；目录也每次现扫，但宿主那份目录缓存没有 TTL、只有提供方喊 invalidate 才清，而默认我**不监视**文件（config 里 `watchSkills:true` 才监视）⇒ 新增/改名/换描述的说明书要等宿主重组才进目录，改正文不用。
 
 **要改这份说明书**：编辑 `C:\Users\ECBob\.dsh\profiles\desktop\node_modules\dsh-bili-base\skills\bili-watch-frames.md`（家目录放同名文件就顶掉包内那份，升级不冲）。
+
+## 想要"高清原帧"？当前做不到（本轮实测过所有已知来源）
+
+| 来源 | 实测结果 |
+|---|---|
+| `x/player/videoshot` 的格子 | **480×270 就是上限**；我试过加 `quality=2`，返回的 `img_x_size/img_y_size` 一个数都没变（参数被忽略） |
+| `x/web-interface/archive/screencast` | **404 回 HTML**（老的故事帧列表，已死） |
+| `x/player/playurl?fnval=16`（dash） | 有 `1920x1080/30fps` 的 **H.264** 轨（`avc1.640033`），但响应里**没有任何"按毫秒取帧"的缩略图字段**；`fnval=1` 那份也没有 `durl[].preview` ⇒ 想拿某一秒的高清静帧只能**解视频流** |
+| 封面 `data.pic` | 是高清的，但只有"封面那一帧"，不能按秒取 |
+
+**当前口径（已补上 ffmpeg）**：`bili_shot {…, hd:true}` 会先按格子定位那一秒，再用**外部 ffmpeg 解视频流**抽帧（`playurl?fnval=16` 挑最高可用的 H.264 轨 ⇒ 本机这条能到 1920×1080@30fps）。ffmpeg 从哪来：`config.ffmpegPath` → 环境变量 `DSH_BILI_FFMPEG` → PATH → 家目录旁边的 `.dsh/.build-tools/ffmpeg/ffmpeg.exe`（本机这颗是 gyan.dev 的 `ffmpeg 9.0.2-essentials_build`，100.5MB，不属于 npm 依赖）。
+- **精度要说清**：`-ss` 放在 `-i` 之前是**按关键帧定位**，所以高清帧可能是那一秒之前最近的关键帧，不是逐帧精确 ⇒ 账本里的 `method` 会写 `ffmpeg-keyframe`（格子帧则写 `videoshot-crop`），`marked` 里也会写明留的是哪一种。
+- 抽不动（权限/地址时效/缺解码器）时**不会静默降级**：帧上带 `hd_error`，工具照样回故事板格子帧。纯 JS 解 H.264 仍然做不到，别宣称不依赖外部程序。
+

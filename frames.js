@@ -15,8 +15,10 @@
 import fs from 'node:fs'
 import path from 'node:path'
 import { decodeJPEG, cropToRGB, encodeJPEG } from './jpgcrop.js'
+import { findFfmpeg, hdFrame } from './ffmpeghd.js'
 
-const BLACK_MAX = 8      // 一格算不算"黑/补位"：采样点的最大通道值 ≤ 8 就算黑（补位是纯 0，真暗帧很少全采样点都 ≤8）
+const BLACK_MAX = 8      // 单点算"亮不亮"的门限
+const BRIGHT_RATIO = 0.3   // 一格的采样点里亮于 BLACK_MAX 的不到 30% ⇒ 判定它是黑格（原先"任一点 >8 就不黑"太松：暗帧/淡出会被算成内容格，把 interval 稀释掉）
 const FALLBACK_STEP = 5  // 万一内容格数测不出来，按实测的 5 秒/格兜底
 
 /** 把 videoshot 的响应变成格子几何。 */
@@ -40,14 +42,15 @@ export function isBlackTile(img, box) {
   const stepX = Math.max(1, Math.floor(w / 5)), stepY = Math.max(1, Math.floor(h / 5))
   for (let y = 0; y < h; y += stepY) for (let x = 0; x < w; x += stepX) pts.push([x, y])
   pts.push([w - 1, h - 1])
-  let mx = 0
+  let mx = 0, bright = 0
   for (const [x, y] of pts) {
     const c = cropToRGB(img, box.x + x, box.y + y, 1, 1)
     const v = Math.max(c[0], c[1], c[2])
     if (v > mx) mx = v
-    if (mx > BLACK_MAX) return false
+    if (mx > BLACK_MAX) bright++
   }
-  return true
+  const n = pts.length
+  return bright / n < BRIGHT_RATIO   // 注意方向：bright 数的是"亮点"占比，所以要「亮点不到 30%」才算黑格
 }
 
 /** 从尾部往回数，算这一 P 真占了几个格（内容格数）。 */
@@ -111,10 +114,10 @@ export function pickTiles({ num, at, smap }) {
 }
 
 /** 取帧的文件名：把秒数与格号都编进去，方便人眼对位。 */
-export function frameFileName(bvid, p, tile, sec, ext, keep) {
+export function frameFileName(bvid, p, tile, sec, ext, keep, stamp) {
   const s = String(Math.round(sec)).padStart(5, '0')
   const t = String(tile).padStart(3, '0')
-  return `${keep ? 'keep/' : ''}${bvid}-p${p}-${t}-${s}s.${ext}`
+  return `${keep ? 'keep/' : ''}${bvid}-p${p}-${t}-${s}s${keep && stamp ? '-' + stamp : ''}.${ext}`   // 留下的帧带年月日时分秒，文件名天然唯一、与账本行一一对应
 }
 
 /** 攒着写盘的临时帧目录与留帧目录都在 frames/ 下，keep 单独一层，clear 默认不碰它。 */
@@ -169,6 +172,8 @@ export function clearFrames(framesRoot, { scope = 'temp', olderThanDays, keepLas
  */
 export async function shoot(deps, { bvid, num, at, p } = {}) {
   const { call, log, framesDir, UA, REFERER } = deps
+  const ffmpeg = deps.ffmpeg ?? findFfmpeg({ ffmpegPath: deps.ffmpegPath, home: deps.home })   // 有 ffmpeg 才谈高清帧；没有就走故事板格子（调用方必须把这点说清）
+    let ffmpegState = ffmpeg ? ffmpeg : 'absent'
   if (!bvid) throw new Error('要传 bvid')
   const v = await call({ path: '/x/web-interface/view', params: { bvid } })
   if (!v.ok) throw new Error(`视频信息读不到：code=${v.code} ${v.message}`)
@@ -236,7 +241,8 @@ export async function shoot(deps, { bvid, num, at, p } = {}) {
       const range = smap.secRangeOfTile(tile)
       const file = path.join(framesDir, frameFileName(bvid, pg.index, tile, range.from, 'jpg', false))
       fs.writeFileSync(file, out)
-      frames.push({ at: range.from, atTo: range.to, tile, sheet: sheetNo, p: pg.index, cid: pg.cid, partStart: pg.partStart, path: file, bytes: out.length, width: box.w, height: box.h })
+      const lumOf = (buf) => { let s = 0; for (const v of buf) s += v; return Math.round(s / buf.length) }
+                  frames.push({ at: range.from, atTo: range.to, tile, sheet: sheetNo, p: pg.index, cid: pg.cid, partStart: pg.partStart, path: file, bytes: out.length, width: box.w, height: box.h, lum: lumOf(rgb) })
     }
   } else {
     // 一格一图的老形状（或这张图解不开）：按接口给的 ts[] 直接存原图
@@ -249,7 +255,18 @@ export async function shoot(deps, { bvid, num, at, p } = {}) {
       if (!one) continue
       const file = path.join(framesDir, frameFileName(bvid, pg.index, pick.tile, smap.secOfTile(pick.tile), one.ext, false))
       fs.writeFileSync(file, one.buf)
-      frames.push({ at: smap.secOfTile(pick.tile), tile: pick.tile, p: pg.index, cid: pg.cid, partStart: pg.partStart, path: file, bytes: one.buf.length, width: null, height: null })
+      frames.push({ at: smap.secOfTile(pick.tile), tile: pick.tile, p: pg.index, cid: pg.cid, partStart: pg.partStart, path: file, bytes: one.buf.length, width: null, height: null, lum: (() => { const ti = decodeJPEG(one.buf); const tr = cropToRGB(ti, 0, 0, ti.width, ti.height); let s2 = 0; for (const v of tr) s2 += v; return Math.round(s2 / tr.length) })() })
+    }
+  }
+  if (deps.hd && !ffmpeg) {   // 说好「抽不动不许静默降级」：机器上没 ffmpeg 也要在每一帧和顶层都留下话
+    for (const f of frames) f.hd_error = 'no-ffmpeg'
+    log('要高清但没找到 ffmpeg（config.ffmpegPath / DSH_BILI_FFMPEG / PATH / 家目录旁与工作区旁的 .dsh/.build-tools/ffmpeg/ffmpeg.exe 都试过）⇒ 这批只能回故事板格子帧')
+  }
+  if (deps.hd && ffmpeg && frames.length) {
+    for (const f of frames) {
+      const hd = await hdFrame({ call, log, framesDir, UA, REFERER, ffmpeg, timeoutMs: deps.timeoutMs }, { bvid, cid: pg.cid, sec: f.at, index: pg.index })
+      if (hd.ok) { f.hd = hd; f.width = hd.width ?? f.width; f.height = hd.height ?? f.height }
+      else f.hd_error = hd.why || hd.message
     }
   }
   log(`取帧 ${frames.length} 张（${bvid} P${pg.index} cid ${pg.cid}，${grid.cols}x${grid.rows} 格、每格约 ${smap ? smap.interval : '?'}s，${tiledMode ? '一格一图' : `从拼图裁出单帧，解了 ${decodedSheets} 张拼图`}）`)
@@ -259,6 +276,9 @@ export async function shoot(deps, { bvid, num, at, p } = {}) {
     duration: Number(v.data?.duration) || 0, part: pg.part, partIndex: pg.index, partDuration: pg.duration, partStart: pg.partStart, pages,
     grid: { cols: grid.cols, rows: grid.rows, tileW: grid.tileW, tileH: grid.tileH, sheets: grid.sheets.length },
     intervalSec: smap ? smap.interval : null, intervalBasis: smap ? smap.basis : null, tiledMode, frames,
+    ffmpeg: ffmpegState,
+    hd_note: deps.hd ? (ffmpeg ? '高清帧由外部 ffmpeg 解视频流抽得（method=ffmpeg-keyframe：按关键帧定位，不是逐帧精确）。' : '要高清但没找到 ffmpeg ⇒ 这批全是故事板格子帧，每帧都带 hd_error=no-ffmpeg。') : null,
     note: tiledMode ? '这条接口本来就是一格一图，直接存的原图。' : '每格都从拼图里裁成**单独一帧**（480x270 这种），不是整页缩略矩阵；at 是该格区间起点（秒，相对 P' + pg.index + '），atTo 是终点。',
   }
 }
+

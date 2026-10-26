@@ -8,15 +8,15 @@ whenToUse: 要看有没有人私信我、或要把某条私信的往来看清楚
 
 `bili_auth {action:"status"}` → `uid`（也写在凭证文件的 `dedeuserid`）。私信类端点要的 `talker_id` / `receiver_id` 是**对方**的 UID，"我"从 status 这条出发，别反过来填。
 
-## 未读有多少（本机实测）
+## 未读到底看哪个数（本轮实测：两个口径会不一致）
 
 ```
 GET /x/msgfeed/unread        params 可空（或带 csrf）
 ```
 
-- `data` 里就是各类未读数：`chat`（私信）、`reply`、`at`、`like`、`recv_like`、`recv_reply`、`favorite`、`danmu`、`coin`、`sys_msg`、`up`。**先看数字再决定要不要拉正文** —— 一次拉取就是一次往返加一堆文本进上下文。
+- `data` 里就是各类未读数：`chat`（私信）、`reply`、`at`、`like` 等。**先看数字再决定要不要拉正文** —— 一次拉取就是一次往返加一堆文本进上下文。,- ⚠️ **`chat` 会漏**：本机实测对面（大号）刚发进私信 6 分钟，`msgfeed/unread` 的 `chat` 一直是 `0`，而 `session_detail` 里同一会话 `unread_count:1`、`ack_seqno` 还停在旧位置 ⇒ **判断"有没有未读私信"要看会话级的 `unread_count`，不能只看 `chat`**（我先前就因为信 `chat` 得出过"信箱很干净"的错结论）。
 - ⚠️ 老的 `x/msgun/num` 现在**直接 404 回 HTML**（这条路径已不存在，别再当首选）。
-- 单个会话的堆积：`GET https://api.vc.bilibili.com/session_svr/v1/session_svr/single_unread` `params:{sender_uid:<对方UID>, receiver_id:<自己UID>, session_type:1, csrf}` → `follow_unread` / `unfollow_unread` / `dustbin_unread` 等。**它只能说明"有没有堆着、有没有掉进未关注垃圾箱"，不能当"对方读没读"的证据**（本机实测：我刚发过去一条，它仍全回 0）。
+- **会话级真值（本机新验通，比 `get_sessions` 省得多）**：`GET https://api.vc.bilibili.com/session_svr/v1/session_svr/session_detail` `params:{talker_id:<对方UID>, session_type:1, csrf}` → `unread_count` / `ack_seqno` / `max_seqno` / `last_msg{...}`。**"有没有堆着未读"就认这里的 `unread_count`**。,- ⚠️ **`fetch_session_msgs` 不会把未读清掉**：本机读了历史之后 `session_detail` 的 `ack_seqno` 纹丝不动、`unread_count` 仍是 1 ⇒ "我读过了"和"B站 认为我读过了"是两件事；也别把 `unread_count` 当"对方读没读我的消息"。,- 怎么标已读（本机**未验通**）：`POST session_svr/update_ack` 试过两种形状（字段放 body、放 query+`sign:true`）都回 `code:0` 且 `data:{}`，但 `ack_seqno` 没动 ⇒ 形状不对，**别当能力用**，也别为此反复打（每打一次都是一次写请求）。参考实现的 `session.json` 里根本没有 ack 端点，App 包里也搜不到 `session_svr`/`update_ack` 字样（它走内部协议），所以这条路我没有可靠依据就不瞎猜。,- 老的堆积查询：`GET https://api.vc.bilibili.com/session_svr/v1/session_svr/single_unread` `params:{sender_uid:<对方UID>, receiver_id:<自己UID>, session_type:1, csrf}` → `follow_unread` / `unfollow_unread` / `dustbin_unread` 等。**它只能说明"有没有堆着、有没有掉进未关注垃圾箱"，不能当"对方读没读"的证据**（本机实测：我刚发过去一条，它仍全回 0）。
 
 ## 有哪些会话
 
@@ -47,6 +47,7 @@ params:{talker_id:<对方UID>, session_type:1, size:5, csrf}   且 sign:true
 |---|---|
 | `im.bilibili.com/x/conversation/chat` | **fetch failed**（这台机器连不通） |
 | `/x/msg/chat?talker_id=…` | 旧地址，未验通（大概与 `msgun/num` 一路货） |
+| `x/web-interface/archive/screencast` | **404 回 HTML**（老的故事帧列表端点，已死；别当高清帧来源） |
 | `/x/msg/session` | 未验通（我原先把它写在会话列表那节，属未经证实） |
 
 ## 口径

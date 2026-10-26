@@ -382,6 +382,54 @@ async function riskCase(homeName, plan, extraCfg) {
     ok("list 回的是目录现状（数量/字节/哪些是留下的）", li.ok === true && typeof li.count === 'number' && Array.isArray(li.kept), JSON.stringify({ c: li.count, b: li.bytes }))
     const wrong = await fr2.execute({ action: 'nuke' }, { agent: { provider: 'x', model: 'y' } })
     ok("action 不认时如实报错", wrong.ok === false && /keep/.test(wrong.message), wrong.message)
+  {
+    // keep 与记账联动：文件名带年月日时分秒，且自动往 ledger/frame 记一行（marked 写清标记了什么）
+    const kHome = path.join(tmp, 'keep-book')
+    const ka = mkCtx(); mod.apply(ka.ctx, { home: kHome, logLevel: 'silent' })
+    const realK = globalThis.fetch
+    globalThis.fetch = async (u) => {
+      const s = String(u)
+      if (s.includes('/x/web-interface/view')) return { ok: true, status: 200, headers: { get: () => 'application/json' }, text: async () => JSON.stringify({ code: 0, message: 'OK', data: { aid: 1, cid: 9, pic: 'p', title: 'T', duration: 20, owner: { name: 'U' }, pages: [{ cid: 9, page: 1, part: 'P1', duration: 20 }] } }) }
+      if (s.includes('/x/player/videoshot')) return { ok: true, status: 200, headers: { get: () => 'application/json' }, text: async () => JSON.stringify({ code: 0, message: 'OK', data: { img_x_len: 2, img_y_len: 2, img_x_size: 4, img_y_size: 4, image: ['//aisubtitle.hdslb.com/fixture/ref-quads.jpg'], ts: [], index: [] } }) }
+      if (s.includes('fixture/ref-quads.jpg')) return { ok: true, status: 200, headers: { get: () => 'image/jpeg' }, arrayBuffer: async () => fs.readFileSync(path.join(fxDir, 'ref-quads.jpg')), text: async () => '', json: async () => null }
+      return { ok: false, status: 404, headers: { get: () => 'text/html' }, text: async () => 'x', json: async () => null }
+    }
+    const toolK = ka.tools.find((t) => t.name === 'bili_frames')
+    const kr = await toolK.execute({ action: 'keep', bvid: 'BV1booktest01', at: [2], p: 1, reason: '自检：看 keep 会不会自己记账' }, { agent: { provider: 'x', model: 'y' } })
+    globalThis.fetch = realK
+    ok('shoot 留下的帧带 lum（黑场要靠数字认，不能靠感觉）', (kr.kept || []).every((f) => typeof f.lum === 'number'), JSON.stringify((kr.kept || []).map((f) => f.lum)))
+    const fh = await import(pathToFileURL(path.join(pkgDir, 'ffmpeghd.js')).href)
+    ok('ffmpeghd：没 ffmpeg 时如实回 no-ffmpeg（不许静默当高清成功）', (await fh.hdFrame({ call: async () => ({ ok: true, code: 0, message: 'OK', data: {} }), log: () => {}, framesDir: tmp, UA: 'u', REFERER: 'r', ffmpeg: null }, { bvid: 'BV1x', cid: 1, sec: 1 }))?.why === 'no-ffmpeg')
+    ok('ffmpeghd：挑轨优先高分辨率的 H.264（avc1 赢过 AV1/低分辨率）', fh.pickStream([{ width: 1280, height: 720, codecs: 'avc1.640033', baseUrl: 'a' }, { width: 1920, height: 1080, codecs: 'av01.0', baseUrl: 'b' }, { width: 640, height: 360, codecs: 'avc1.640033', baseUrl: 'c' }])[0].baseUrl === 'a', JSON.stringify(fh.pickStream([{ width: 1280, height: 720, codecs: 'avc1.640033', baseUrl: 'a' }, { width: 1920, height: 1080, codecs: 'av01.0', baseUrl: 'b' }])[0]))
+    ok('ffmpeghd：findFfmpeg 能找到本机补上的那颗 ffmpeg', typeof fh.findFfmpeg({ ffmpegPath: 'D:/DSH_WorkSpace/.dsh/.build-tools/ffmpeg/ffmpeg.exe' }) === 'string', String(fh.findFfmpeg({ ffmpegPath: 'D:/DSH_WorkSpace/.dsh/.build-tools/ffmpeg/ffmpeg.exe' })))
+    {
+      // 机器上没有 ffmpeg 时，要高清也不能静默降级（本机真栽过：静默回了格子帧，我还当成高清验过了）
+      const savedW = process.env.DSH_WORKSPACE, savedF = process.env.DSH_BILI_FFMPEG
+      process.env.DSH_WORKSPACE = path.join(tmp, 'nowhere')
+      process.env.DSH_BILI_FFMPEG = path.join(tmp, 'nowhere', 'ffmpeg.exe')
+      const savedFetch = globalThis.fetch
+      const fxFlat = fs.readFileSync(path.join(fxDir, 'ref-flat.jpg'))
+      const vJ = { code: 0, message: 'OK', data: { aid: 1, cid: 9, pic: 'p', title: 'T', duration: 20, owner: { name: 'U' }, pages: [{ cid: 9, page: 1, part: 'P1', duration: 20 }] } }
+      const sJ = { code: 0, message: 'OK', data: { img_x_len: 2, img_y_len: 2, img_x_size: 4, img_y_size: 4, image: ['//aisubtitle.hdslb.com/fixture/ref-flat.jpg'], ts: [], index: [] } }
+      globalThis.fetch = async (u) => {
+        const s = String(u)
+        if (s.includes('/x/web-interface/view') || s.includes('/x/player/videoshot')) return { ok: true, status: 200, headers: { get: () => 'application/json' }, text: async () => JSON.stringify(s.includes('/x/web-interface/view') ? vJ : sJ) }
+        if (s.includes('fixture/ref-flat.jpg')) return { ok: true, status: 200, headers: { get: () => 'image/jpeg' }, arrayBuffer: async () => fxFlat, text: async () => '', json: async () => null }
+        return { ok: false, status: 404, headers: { get: () => 'text/html' }, text: async () => 'x', json: async () => null }
+      }
+      const noFfDir = path.join(tmp, 'noff')
+      const rno = await fr.shoot({ call: async ({ path: pp }) => (pp.includes('/x/web-interface/view') ? { ok: true, code: 0, message: 'OK', data: vJ.data } : { ok: true, code: 0, message: 'OK', data: sJ.data }), log: () => {}, framesDir: noFfDir, UA: 'u', REFERER: 'https://www.bilibili.com', ffmpegPath: path.join(tmp, 'nope.exe'), hd: true }, { bvid: 'BV1noffmpegtest', num: 1 })
+      globalThis.fetch = savedFetch
+      process.env.DSH_WORKSPACE = savedW
+      process.env.DSH_BILI_FFMPEG = savedF
+      ok('要高清但机器上没有 ffmpeg 时不静默：每帧带 hd_error=no-ffmpeg、顶层带 ffmpeg=absent 与 hd_note', rno.ffmpeg === 'absent' && /没找到 ffmpeg/.test(String(rno.hd_note)) && (rno.frames || []).length > 0 && rno.frames.every((f) => f.hd_error === 'no-ffmpeg'), JSON.stringify({ ffmpeg: rno.ffmpeg, first: (rno.frames || [])[0] && (rno.frames || [])[0].hd_error }))
+    }
+
+    ok('keep 的文件名带年月日时分秒（同一格重复留不会互相覆盖）', /^keep\/BV1booktest01-p1-\d+-\d+s-\d{8}-\d{6}\.jpg$/.test(kr.kept?.[0]?.file || ''), 'file=' + String(kr.kept?.[0]?.file) + ' | ok=' + kr.ok + ' | message=' + String(kr.message || '').slice(0, 150) + ' | detail=' + JSON.stringify(kr.detail && kr.detail.message || '').slice(0, 150))
+    const book = await (ka.tools.find((t) => t.name === 'bili_ledger').execute({ action: 'read', table: 'frame' }))
+    ok('keep 自动往 ledger/frame 记了行（带 marked：写清这一格被判定了什么）', book.rows.length === 1 && !!book.rows[0].marked && /格/.test(book.rows[0].marked) && book.rows[0].reason.includes('自检'), JSON.stringify(book.rows[0] || null).slice(0, 220))
+    ok('返回值里回带记账结果（不能悄悄不记账）', !!kr.ledger && (kr.ledger.added === 1 || kr.ledger.ok === true), JSON.stringify(kr.ledger || { no_field: true, kr_ok: kr.ok, kr_msg: String(kr.message || '').slice(0, 120) }))
+  }
   }
 }
 
@@ -389,6 +437,7 @@ try { fs.rmSync(tmp, { recursive: true, force: true }) } catch { /* 收尾删不
 console.log(`\ndsh-bili-base 离线自检：${pass} 项通过${fail ? `，${fail} 项失败` : ''}${skipped ? `，${skipped} 项跳过` : ''}`)
 console.log(fail ? 'SOME FAIL' : 'ALL PASS')
 process.exit(fail ? 1 : 0)
+
 
 
 
