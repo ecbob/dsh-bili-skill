@@ -12,7 +12,7 @@ whenToUse: 要替使用者主动发一条私信、或回复收到的私信时。
 
 ```
 POST https://api.vc.bilibili.com/web_im/v1/web_im/send_msg
-params(query)：{w_sender_uid:<自己UID>, w_receiver_id:<对方UID>, csrf}   且 sign:true
+params(query)：{w_sender_uid:<自己UID>, w_receiver_id:<对方UID>}   且 sign:true（csrf 走 body，`bili_api` 自动补；query 不给也通，本机 2026-10-26 实测）
 body（字段名带方括号；msg[content] 的值本身是个 JSON 字符串）：
   msg[sender_uid]=<自己UID>    msg[receiver_id]=<对方UID>    msg[receiver_type]=1
   msg[msg_type]=1（纯文本）     msg[msg_status]=0

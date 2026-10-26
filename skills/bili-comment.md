@@ -16,12 +16,12 @@ whenToUse: 要替使用者在某条视频下留言、回复某条评论、或按
 
 ```
 POST /x/v2/reply/add
-params(query): {csrf, dm_img_list:"[]", dm_img_str:"<两位随机字符>", dm_cover_img_str:"<两位随机字符>", dm_img_inter:'{"ds":[],"wh":[0,0,0],"of":[0,0,0]}'}，并加 `sign: true`
+params(query): {dm_img_list:"[]", dm_img_str:"<两位随机字符>", dm_cover_img_str:"<两位随机字符>", dm_img_inter:'{"ds":[],"wh":[0,0,0],"of":[0,0,0]}'}，并加 `sign: true`
 body: {oid:<aid>, type:1, message:"<正文>", plat:1, statistics:'{"appId":100,"platform":5}', root:0, parent:0, csrf}
 ```
 - ⚠️ 正文的键名是 **`message`**，不是 `msg`：写 `msg` 会被判 **`12066 不可发送空白内容`**（本机 2026-10-26 撞实过）。
 - ⚠️ `/x/v2/reply` 是**读**列表的路径，往它 POST 回 **`405 Method Not Allowed`**；发评论只打 `/x/v2/reply/add`。
-- 这条接口还要 `sign:true`（WBI）+ 上面那四个 `dm_*` 反爬参数 + `plat`/`statistics`；`csrf` 在 query 和 body 里各带一份（缺了就 `-111 CSRF 校验失败`）。
+- 这条接口还要 `sign:true`（WBI）+ 上面那四个 `dm_*` 反爬参数 + `plat`/`statistics`。**csrf 只在 body 里带一份就通**（`bili_api` 的 POST 自动补进 body）—— 本机 2026-10-26 用 0.8.0 实测：query 里不给 csrf 照样 `code:0` 且读回 `state:0 attr:0`；真正缺了会 `-111 CSRF 校验失败` 的是 **body** 那份。
 - 成功判据：`code:0` + `data.rpid`（同时回 `rpid_str` —— **记账存字符串那份**）+ `data.success_toast`。
 - `oid` 是 **aid**（数字），不是 bvid —— 先 `GET /x/web-interface/view?bvid=` 换 `data.aid`。
 - 回复某条评论：`root` = 那条评论的顶层 rpid，`parent` = 被回的那条的 rpid（回楼中楼时 `parent` 填对方 rpid，`root` 填它所在楼）。

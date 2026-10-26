@@ -39,7 +39,7 @@ let risk = null   // 形如 { left: 1, code: -412 } 或 { left: 1, voucher: true
 globalThis.fetch = async (url, init = {}) => {
   const u = String(url)
   hits.push({ url: u, method: (init.method || 'GET'), headers: { ...(init.headers || {}) }, body: init.body ? String(init.body) : '' })
-  let data = { isLogin: true, mid: 443924958, uname: 'tester', wbi_img: { img_url: 'https://i0.hdslb.com/bfs/wbi/7cd08494133a4351bb2a2cb38190f56f.png', sub_url: 'https://i0.hdslb.com/bfs/wbi/4932caf07c6049e4b7e523aa1db8ea06.png' } }
+  let data = { isLogin: true, mid: 443924958, uname: 'tester', level_info: { current_level: 2, current_min: 0, current_exp: 0, next_exp: 0 }, vipStatus: 0, vipType: 1, wbi_img: { img_url: 'https://i0.hdslb.com/bfs/wbi/7cd08494133a4351bb2a2cb38190f56f.png', sub_url: 'https://i0.hdslb.com/bfs/wbi/4932caf07c6049e4b7e523aa1db8ea06.png' } }
   let code = 0
   if (u.includes('/x/frontend/finger/spi')) data = { b_3: SPI_B3, b_4: SPI_B4 }
   else if (u.includes('/x/v2/reply/add')) {
@@ -366,6 +366,23 @@ eq('delete 按 key 删掉了那一行', [del.ok, del.removed], [true, 1])
 const tbs = await led({ action: 'tables' })
 ok('tables 列出了表与行数', tbs.tables.some((t) => t.table === 'seen'))
 
+/* ── 14b. 家目录被外部清过之后记账要自愈（0.8.0 撞实：ledger/ 没了就直接 ENOENT，只在挂载时 mkdir）── */
+{
+  const chHome = path.join(tmp, 'cleared')
+  const cctx = mkCtx(); mod.apply(cctx.ctx, { home: chHome, logLevel: 'silent' })
+  fs.rmSync(path.join(chHome, 'ledger'), { recursive: true, force: true })
+  fs.rmSync(path.join(chHome, 'frames'), { recursive: true, force: true })
+  const led2 = cctx.tools.find((t) => t.name === 'bili_ledger').execute
+  const ap4 = await led2({ action: 'append', table: 'note', rows: [{ topic: '清完再写' }] })
+  ok('ledger/ 被删掉后 append 自己把目录建回来并写进行（不再 ENOENT）', ap4.ok === true && ap4.added === 1 && fs.existsSync(path.join(chHome, 'ledger', 'note.jsonl')), JSON.stringify(ap4))
+  const dl2 = await led2({ action: 'delete', table: 'dm', key: 'msg_key', removeKey: 'nope' })
+  ok('同一情形下 delete 也不炸（新表没写过也照实回 removed:0，目录仍在）', dl2.ok === true && dl2.removed === 0 && fs.existsSync(path.join(chHome, 'ledger')), JSON.stringify(dl2))
+  const fr3 = cctx.tools.find((t) => t.name === 'bili_frames').execute
+  const lv = await fr3({ action: 'list' })
+  const cv = await fr3({ action: 'clear' })
+  ok('frames/ 被删掉后 list/clear 都不炸（回 0 与"没得删"，不把失败糊成删干净了）', lv.ok === true && lv.count === 0 && cv.ok === true && cv.removedCount === 0, JSON.stringify({ lv, cv }))
+}
+
 /* ── 15. bili_shot / bili_auth 的守门 ── */
 const noBvid = await a.tools.find((t) => t.name === 'bili_shot').execute({})
 ok('bili_shot 不给 bvid 回 ok:false 而不是抛', noBvid.ok === false && typeof noBvid.message === 'string')
@@ -373,6 +390,7 @@ let threw = false; try { await a.tools.find((t) => t.name === 'bili_auth').execu
 ok('poll 不给 key 就明确报错（不闷声发请求）', threw)
 const st = await a.tools.find((t) => t.name === 'bili_auth').execute({ action: 'status' })
 ok('bili_auth status 走假 fetch 认成已登录', st.ok === true && st.loggedIn === true && st.uid === '443924958', JSON.stringify(st))
+ok('status 的 level 是真账号等级（level_info.current_level），vipStatus 另走 vip_status 字段 —— 先前把 vipStatus 当 level 回', st.level === 2 && st.vip_status === 0, JSON.stringify({ level: st.level, vip_status: st.vip_status }))
 
 /* ── 16. 撞风控时自动现取 spi 上报并重试一次（gaia 默认关着也要能自愈）── */
 const tagOf = (u) => (u.includes('finger/spi') ? 'spi' : u.includes('gaia-gateway') ? 'gaia' : u.includes('reply/add') ? 'add' : 'other')
@@ -563,9 +581,13 @@ async function riskCase(homeName, plan, extraCfg) {
     ok('ffmpeghd：findFfmpeg 能找到本机补上的那颗 ffmpeg', typeof fh.findFfmpeg({ ffmpegPath: 'D:/DSH_WorkSpace/.dsh/.build-tools/ffmpeg/ffmpeg.exe' }) === 'string', String(fh.findFfmpeg({ ffmpegPath: 'D:/DSH_WorkSpace/.dsh/.build-tools/ffmpeg/ffmpeg.exe' })))
     {
       // 机器上没有 ffmpeg 时，要高清也不能静默降级（本机真栽过：静默回了格子帧，我还当成高清验过了）
-      const savedW = process.env.DSH_WORKSPACE, savedF = process.env.DSH_BILI_FFMPEG
+      // ⚠️ findFfmpeg 还会拿 process.cwd() 兜底找 .dsh/.build-tools/ffmpeg/ffmpeg.exe（本机实测的摆法）：
+      //    0.8.1 从 node_modules 里跑这份自检时，cwd 还指在工作区 ⇒ 真 ffmpeg 被找着、这条假"没 ffmpeg"直接变 no-stream。
+      //    所以连 cwd 一起挪到临时目录，才算真在测"机器上没有 ffmpeg"那一路。
+      const savedW = process.env.DSH_WORKSPACE, savedF = process.env.DSH_BILI_FFMPEG, savedCwd = process.cwd()
       process.env.DSH_WORKSPACE = path.join(tmp, 'nowhere')
       process.env.DSH_BILI_FFMPEG = path.join(tmp, 'nowhere', 'ffmpeg.exe')
+      process.chdir(tmp)
       const savedFetch = globalThis.fetch
       const fxFlat = fs.readFileSync(path.join(fxDir, 'ref-flat.jpg'))
       const vJ = { code: 0, message: 'OK', data: { aid: 1, cid: 9, pic: 'p', title: 'T', duration: 20, owner: { name: 'U' }, pages: [{ cid: 9, page: 1, part: 'P1', duration: 20 }] } }
@@ -581,6 +603,7 @@ async function riskCase(homeName, plan, extraCfg) {
       globalThis.fetch = savedFetch
       process.env.DSH_WORKSPACE = savedW
       process.env.DSH_BILI_FFMPEG = savedF
+      process.chdir(savedCwd)
       ok('要高清但机器上没有 ffmpeg 时不静默：每帧带 hd_error=no-ffmpeg、顶层带 ffmpeg=absent 与 hd_note', rno.ffmpeg === 'absent' && /没找到 ffmpeg/.test(String(rno.hd_note)) && (rno.frames || []).length > 0 && rno.frames.every((f) => f.hd_error === 'no-ffmpeg'), JSON.stringify({ ffmpeg: rno.ffmpeg, first: (rno.frames || [])[0] && (rno.frames || [])[0].hd_error }))
     }
 

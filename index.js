@@ -496,7 +496,8 @@ export function apply(ctx, config = {}) {
   async function whoami() {
     const r = await call({ path: '/x/web-interface/nav' })
     const d = r.data ?? {}
-    return { ok: !!r.ok, loggedIn: !!d.isLogin, uid: d.mid ? String(d.mid) : null, uname: d.uname || null, face: d.face_url || null, level: d.vipStatus != null ? d.vipStatus : null, hasCredential: !!readCred()?.sessdata, message: r.ok ? (d.isLogin ? '凭证有效' : '接口通了但没登录（凭证缺失或已过期）') : r.message }
+    // level 必须是真账号等级（nav 的 level_info.current_level）：先前我拿 vipStatus 当 level 回，本机 0.8.0 撞实 —— status 报 level:0，而评论回执里 current_level=2
+    return { ok: !!r.ok, loggedIn: !!d.isLogin, uid: d.mid ? String(d.mid) : null, uname: d.uname || null, face: d.face_url || null, level: d.isLogin ? (d.level_info?.current_level ?? null) : null, vip_status: d.isLogin ? (d.vipStatus ?? null) : null, hasCredential: !!readCred()?.sessdata, message: r.ok ? (d.isLogin ? '凭证有效' : '接口通了但没登录（凭证缺失或已过期）') : r.message }
   }
 
   // ───────────────────────── 登录（passport 那两步） ─────────────────────────
@@ -585,6 +586,8 @@ export function apply(ctx, config = {}) {
   const tableName = (t) => { const s = String(t || 'notes').trim().toLowerCase().replace(/[^a-z0-9_\u4e00-\u9fff-]/g, '-'); return s || 'notes' }
   const tableFile = (t) => path.join(ledgerDir, `${tableName(t)}.jsonl`)
   const readRows = (t) => { try { return fs.readFileSync(tableFile(t), 'utf8').split('\n').filter((l) => l.trim()).map((l) => { try { return JSON.parse(l) } catch { return { bad: l } } }) } catch { return [] } }
+  /** 写之前把 ledger/ 补出来：家目录被人从外面删过（清场/回滚）时，append/delete 不该直接 ENOENT —— 本机 0.8.0 撞实过 */
+  const ensureLedgerDir = () => { try { fs.mkdirSync(ledgerDir, { recursive: true }) } catch { /* 建不动就让写自己报错，别在这儿吞 */ } }
   const ledger = ({ action, table, rows, key, limit, removeKey }) => {
     const a = String(action || 'read')
     if (a === 'tables') { const out = []; try { for (const f of fs.readdirSync(ledgerDir)) if (f.endsWith('.jsonl')) out.push({ table: f.slice(0, -6), rows: readRows(f.slice(0, -6)).length }) } catch { /* 空目录 */ } return { ok: true, tables: out, dir: ledgerDir } }
@@ -602,13 +605,14 @@ export function apply(ctx, config = {}) {
         if (keyField) { const kv = rec[keyField]; if (kv == null || kv === '' || have.has(kv)) continue; have.add(kv) }
         added.push(rec)
       }
-      if (added.length) fs.appendFileSync(tableFile(t), added.map((r) => JSON.stringify(r)).join('\n') + '\n', 'utf8')
+      if (added.length) { ensureLedgerDir(); fs.appendFileSync(tableFile(t), added.map((r) => JSON.stringify(r)).join('\n') + '\n', 'utf8') }
       log(`记账 ${t}：新增 ${added.length} 行（去重键 ${keyField || '无'}，跳过重复 ${list.length - added.length} 行）`)
       return { ok: true, table: t, added: added.length, skipped: list.length - added.length, file: tableFile(t) }
     }
     if (a === 'delete') {
       const all = readRows(t)
       const keep = all.filter((r) => r?.[key] !== removeKey)
+      ensureLedgerDir()
       fs.writeFileSync(tableFile(t), (keep.length ? keep.map((r) => JSON.stringify(r)).join('\n') + '\n' : ''), 'utf8')
       return { ok: true, table: t, removed: all.length - keep.length, file: tableFile(t) }
     }
