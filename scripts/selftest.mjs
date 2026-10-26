@@ -50,6 +50,21 @@ globalThis.fetch = async (url, init = {}) => {
   return { status: 200, ok: true, headers: { get: () => 'application/json' }, text: async () => body, json: async () => JSON.parse(body) }
 }
 
+async function probePollShape(body, cookies) {
+  const res = { json: async () => body, headers: { getSetCookie: () => cookies } }
+  const pick = (r) => { const out = {}; for (const line of r.headers.getSetCookie ? r.headers.getSetCookie() : []) { const m = /^([^=]+)=([^;]*)/.exec(line); if (m) out[m[1].trim()] = decodeURIComponent(m[2]) } return out }
+  const j = await res.json()
+  const d = j?.data
+  /* 本机 2026-10-26 真扫一次码取到的形状：外层 code 只表示"这次请求成功"，二维码真状态在 data.code */
+  const inner = Number(d?.code ?? -1)
+  if (inner === 86038) return "expired"
+  if (inner === 86090) return "scanned"
+  if (inner !== 0) return "waiting"
+  const ck = pick(res)
+  const c = { sessdata: ck.SESSDATA || ck.sessdata || "", bili_jct: ck.bili_jct || "", dedeuserid: ck.DedeUserID || "" }
+  if (!c.sessdata) return "scanned_no_cookie"
+  return { state: "ok", sessdata: c.sessdata, dedeuserid: c.dedeuserid }
+}
 const mod = await import(pathToFileURL(path.join(pkgDir, 'index.js')).href)
 const a = mkCtx()
 mod.apply(a.ctx, { home, logLevel: 'silent' })
@@ -98,6 +113,21 @@ eq('注册了 5 只工具', a.tools.map((t) => t.name), ['bili_auth', 'bili_api'
 ok('每只工具都有非空 description 与 presentCall', a.tools.every((t) => t.description && t.description.length > 30 && typeof t.presentCall === 'function'))
 ok('effect 挂上了 skill provider 的 disposer', a.effects.some(([, l]) => String(l).includes('skills provider')))
 
+/* ── 1b. 扫码登录 poll 的码值（真扫一次码取到的三种：86038 失效 / 86090 已扫未确认 / 0 + 6 条 set-cookie 成功）── */
+{
+  const cases = [
+    ["86038 已失效", { code: 0, message: "OK", data: { code: 86038, message: "二维码已失效" } }, [], "expired"],
+    ["86090 已扫未确认", { code: 0, data: { code: 86090, message: "二维码已扫码未确认" } }, [], "scanned"],
+    ["外层 0 但 data 没给码只能当还没扫（不许判成功）", { code: 0, data: {} }, [], "waiting"],
+    ["data.code=0 但一条 cookie 都没落（只能报已扫、不许写凭证）", { code: 0, data: { code: 0 } }, [], "scanned_no_cookie"],
+  ]
+  for (const [label, body, cookies, want] of cases) {
+    const got = await probePollShape(body, cookies)
+    ok("poll " + label + " ⇒ " + want, got === want, JSON.stringify({ got, want }))
+  }
+  const win = await probePollShape({ code: 0, data: { code: 0, url: "https://passport.biligame.com/x/passport-login/web/crossDomain?ticket=x", refresh_token: "rt", timestamp: 1 } }, ["SESSDATA=abc; Path=/; Domain=bilibili.com", "bili_jct=def; Path=/", "DedeUserID=42; Path=/"])
+  ok("成功那一路判成 ok 且读的是 SESSDATA 这个大小写（我先前读小写 sessdata，把真成功误报成\"扫码了但没 sessdata\"）", win.state === "ok" && win.sessdata === "abc" && win.dedeuserid === "42", JSON.stringify(win))
+}
 /* ── 2. 宿主 schema 规则自查：properties/required/additionalProperties 只许挂在 type:'object' 上 ── */
 const TYPES = ['object', 'array', 'string', 'number', 'integer', 'boolean', 'null']
 const hostViolations = (node, p = '$', out = []) => {
@@ -160,7 +190,7 @@ const yes = await mod.__attachImages(imgGet, { agent: { options: { provider: 'p'
 eq('模型接图片时把帧存成附件引用并回 refs', [yes.ok, yes.refs], [true, ['ref0']])
 const txtGet = (k) => (k === 'attachments' ? { saveImages: async () => ['x'] } : (k === 'llm' ? { resolveModelInfo: async () => ({ inputModalities: ['text'] }) } : null))
 const noImg = await mod.__attachImages(txtGet, { agent: { options: { provider: 'p', model: 'm' } } }, [{ buffer: Buffer.from('a'), mediaType: 'image/jpeg' }])
-ok('模型不接图片时退化成文字并给 hint（说清为什么这次只有路径）', noImg.ok === false && noImg.reason === 'model_no_image' && /modlens_read_image/.test(noImg.hint))
+ok('模型不接图片时退化成文字并给 hint（讲清这次只有路径、以及靠 read_image/卡片看）', noImg.ok === false && noImg.reason === 'model_no_image' && /read_image/.test(noImg.hint) && !/modlens/.test(noImg.hint), noImg.hint)
 
 /* ── 8. URL 白名单 ── */
 const apiExec = a.tools.find((t) => t.name === 'bili_api').execute

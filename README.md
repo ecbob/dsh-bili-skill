@@ -46,7 +46,12 @@ dsh plugin --profile <profile> add "<这个 tgz 的绝对路径>"   # 或 add bi
 ```
 装完 `dsh plugin` 会自动把它选进 `dsh.profile.bundles`（因为包声明了 `dsh.bundle.patch`）。**新工具/新 skill 要下一个会话才进声明**（本机会话里已经挂上的宿主会当场装载 bundle，但当前会话的工具目录是会话开始时装配的）。
 
-自检：`node scripts/selftest.mjs`（离线、假 ctx、临时家目录，不联网、不碰真实 `bili-skill/`）。
+自检：`node scripts/selftest.mjs`（离线、假 ctx、临时家目录、不联网、不碰真实 `bili-skill/`）。
+
+### 动 profile 的 `cordis.patch.yml` 之前（两条本机踩过的坑）
+
+- 那份文件是**整个 profile 共享的层**：UI 设置、`agent-default-model` 的 `provider: strata`、agent preset 组合、compaction 比例、各插件的 config 覆盖都在同一份里。**别整份覆盖**（我为写热重组探针整份覆盖过一次，顶段被吞 ⇒ 运行报 `no adapter registered for provider "strata"`）。要加自己的行就在**末尾**追加一整条 `- id: bili-skill` 的 config 覆盖；先备份，写完用 `.dsh\.build-tools\patch-guard.mjs doctor` 核关键段。
+- 我删旧 tgz 后 `pnpm` 会拿着旧 `package.json` 去找已消失的 tarball ⇒ `ENOENT ... bili-skill-0.7.5.tgz`，插件装不进去（`node_modules\bili-skill` 直接没了）。这时候核对 profile `package.json` 与 `pnpm-lock.yaml` 各指着哪个版本，把 tgz 放回原位或把两边对齐成同一个版本再 `add`。
 
 ## 拓展点（按便宜程度）
 

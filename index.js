@@ -31,6 +31,7 @@ import os from 'node:os'
 import crypto from 'node:crypto'
 import { fileURLToPath } from 'node:url'
 import { shoot, clearFrames, listFrames, frameFileName } from './frames.js'
+import { qrPngVendor } from './qrvendor.js'
 
 export const name = 'bili-skill'
 /** 硬注入：这两样在本 profile 里必然存在（tools 注册 / skills 注册表） */
@@ -83,7 +84,7 @@ export async function __attachImages(get, exec, images) {
   if (llm?.resolveModelInfo) {
     try {
       const m = (await llm.resolveModelInfo(provider, model, exec?.signal))?.inputModalities
-      if (Array.isArray(m) && !m.includes('image')) return { ok: false, reason: 'model_no_image', hint: '模型 ' + provider + '/' + model + ' 不接图片输入（' + (m.join(', ') || '没声明') + '）=> 这次只回文件路径，要看得靠视觉类插件（modlens_read_image）' }
+      if (Array.isArray(m) && !m.includes('image')) return { ok: false, reason: 'model_no_image', hint: '模型 ' + provider + '/' + model + ' 不接图片输入（' + (m.join(', ') || '没声明') + '）=> 这次只回文件路径，当前模型不接图 => 我这边用 read_image 看，或让它以卡片形式贴给你扫' }
     } catch { /* 探针失败就当能发，让宿主自己决定 */ }
   }
   try {
@@ -291,6 +292,15 @@ export function apply(ctx, config = {}) {
   const framesDir = path.join(home, 'frames')
   const logFile = path.join(home, 'base.log')
   for (const d of [home, ledgerDir, framesDir]) { try { fs.mkdirSync(d, { recursive: true }) } catch { /* 有了 */ } }
+  /* 旧版本把二维码图丢在 frames 顶层（不进 frame 账、无清理归口）：搬到家目录 tmp-qr/，搬不动就删 */
+  try {
+    for (const f of fs.readdirSync(framesDir)) {
+      if (!/^qr-.*\.png$/i.test(f)) continue
+      const from = path.join(framesDir, f)
+      const to = path.join(home, 'tmp-qr', f)
+      try { fs.mkdirSync(path.dirname(to), { recursive: true }); fs.renameSync(from, to) } catch { try { fs.rmSync(from) } catch { /* 算了 */ } }
+    }
+  } catch { /* frames 还没建 */ }
 
   // 要用的时候现读 config.json（本机实测：改完 ffmpegPath 后不重启、宿主也没重组，挂着的实例还拿旧值 ⇒ 高清帧验不通）
   const liveCfg = () => { try { return { ...cfg, ...JSON.parse(fs.readFileSync(path.join(home, 'config.json'), 'utf8')) } } catch { return cfg } }
@@ -302,11 +312,15 @@ export function apply(ctx, config = {}) {
 
   // ───────────────────────── 凭证与身份 ─────────────────────────
   const readCred = () => { try { const j = JSON.parse(fs.readFileSync(credFile, 'utf8')); return j && typeof j === 'object' ? j : null } catch { return null } }
-  const writeCred = (c) => {
+  /** 凭证是哪来的：import（从 bili-duty 抄的）还是 scan（自己扫的码）。文件 credential-source.json，读不到就当 unknown */
+  let credSource = (() => { try { return JSON.parse(fs.readFileSync(path.join(home, 'credential-source.json'), 'utf8'))?.source || 'unknown' } catch { return 'unknown' } })()
+  const writeCred = (c, source = 'scan') => {
     const tmp = `${credFile}.tmp`
     fs.writeFileSync(tmp, JSON.stringify(c, null, 2), 'utf8')
     fs.renameSync(tmp, credFile)
     try { fs.chmodSync(credFile, 0o600) } catch { /* Windows 上是摆设，不报错就够 */ }
+    /* 凭证是哪来的（import = 从 bili-duty 抄的 / scan = 自己扫的码）：status 要如实报，别再说 imported=文件存在 */
+    try { fs.writeFileSync(path.join(home, 'credential-source.json'), JSON.stringify({ source, at: new Date().toISOString() }, null, 2) + '\n', 'utf8') } catch { /* 来源记不上，不拦写凭证 */ }
   }
   const cookieHeader = __cookieHeader   // 见文件底部（挪到模块级是为了让它能被离线自检直接测到）
   const importCred = () => {
@@ -316,7 +330,7 @@ export function apply(ctx, config = {}) {
       try {
         const j = JSON.parse(fs.readFileSync(f, 'utf8'))
         if (!j?.sessdata) continue
-        writeCred({ sessdata: j.sessdata, bili_jct: j.bili_jct, buvid3: j.buvid3, dedeuserid: j.dedeuserid })
+        writeCred({ sessdata: j.sessdata, bili_jct: j.bili_jct, buvid3: j.buvid3, dedeuserid: j.dedeuserid }, 'import')
         log(`凭证从别处抄来一份：${f}（省一次扫码；之后两边各自独立）`)
         return true
       } catch { /* 坏文件跳过 */ }
@@ -324,7 +338,7 @@ export function apply(ctx, config = {}) {
     return false
   }
   let cred = readCred()
-  if (!cred?.sessdata && cfg.autoImportCredential) { importCred(); cred = readCred() }
+  if (!cred?.sessdata && cfg.autoImportCredential) { if (importCred()) credSource = 'import'; cred = readCred() }
 
   // Gaia（B站 的风控/AI 审核网关）：参考实现每次请求前会 spi 取新指纹 → POST ExClimbWuzhi 上报 →
   // 之后请求都用**这对现取的 buvid**。逐变量隔离 + 2×2 实测：评论被判 state 17 / attr 0x620000 的**决定因素是
@@ -388,7 +402,7 @@ export function apply(ctx, config = {}) {
       init.headers['content-type'] = contentType || 'application/x-www-form-urlencoded'
     }
     const ctl = new AbortController()
-    const t = setTimeout(() => ctl.abort(), cfg.requestTimeoutMs)
+    const t = setTimeout(() => ctl.abort(), liveCfg().requestTimeoutMs)
     init.signal = ctl.signal
     try {
       const res = await fetch(url, init)
@@ -483,33 +497,54 @@ export function apply(ctx, config = {}) {
     const d = r.json?.data
     if (!d?.qrcode_key || !d?.url) throw new Error(`生成二维码失败：${r.json?.message || '返回里没有 qrcode_key'}`)
     loginStore.set(d.qrcode_key, { url: d.url, at: Date.now() })
-    const png = path.join(home, 'tmp-qr.png')
-    try { fs.mkdirSync(path.dirname(png), { recursive: true }) } catch { /* 有了 */ }
-    return { key: d.qrcode_key, url: d.url, note: '手机 B站 → 我的 → 扫一扫；确认时选"记住我"那种长期登录。约 180 秒过期。' }
+    /* 出二维码图：先用自研 qrpng，它不成就用 vendored 参考实现（本机实测：自研的编码层还没通过外部解码器） */
+    const qr = qrPngVendor(d.url)
+    let pngPath = null
+    if (qr.ok) {
+      /* 落在家目录的 tmp-qr/，不放 frames/：frames 是画面帧的管家目录（keep/clear 那套管），二维码混进去既不进 frame 账也没清理归口 */
+      const qrDir = path.join(home, 'tmp-qr')
+      fs.mkdirSync(qrDir, { recursive: true })
+      pngPath = path.join(qrDir, 'qr-' + d.qrcode_key.slice(0, 16) + '.png')
+      try { fs.writeFileSync(pngPath, qr.png) } catch (e) { log('二维码图存盘失败：' + String(e?.message || e)); pngPath = null }
+      for (const f of fs.readdirSync(qrDir)) { if (f === path.basename(pngPath)) continue; try { fs.rmSync(path.join(qrDir, f)) } catch { /* 别人正拿着就别删 */ } }
+    } else log('二维码图没出成：' + qr.message + '（照样回 url，你可以自己打开）')
+    loginStore.set(d.qrcode_key + ':png', pngPath)
+    return { key: d.qrcode_key, url: d.url, qr_png: qr.ok ? { path: pngPath, bytes: qr.png.length, dim: qr.dim, engine: 'qrcode-generator-1.4.4(vendored)' } : { failed: qr.message }, note: '手机 B站 → 我的 → 扫一扫；确认时选"记住我"那种长期登录。约 180 秒过期。图在 qr_png 那份（家目录 tmp-qr/，每次 start 只留最新一张）。' }
   }
   async function loginPoll(key) {
     if (!key) throw new Error('要传 bili_auth 之前给的 key')
-    const res = await fetch(`https://passport.bilibili.com/x/passport-login/web/qrcode/poll?qrcode_key=${encodeURIComponent(key)}`, { headers: { 'user-agent': UA, referer: REFERER }, redirect: 'manual', signal: AbortSignal.timeout(cfg.requestTimeoutMs) })
+    const res = await fetch(`https://passport.bilibili.com/x/passport-login/web/qrcode/poll?qrcode_key=${encodeURIComponent(key)}`, { headers: { 'user-agent': UA, referer: REFERER }, redirect: 'manual', signal: AbortSignal.timeout(liveCfg().requestTimeoutMs) })
     let body = null
-    try { body = await res.json() } catch { /* poll 有时回空体 */ }
+    try { body = await res.json() } catch { /* poll 偶尔回空体 */ }
+    /* 关键（本机扫码实测）：外层 code 只表示"这次请求成功"，二维码的真实状态在 data.code：
+       0=已确认成功（同时 6 条 set-cookie 落下 SESSDATA/bili_jct/DedeUserID/DedeUserID__ckMd5/sid/default_sites，
+         并且 data.url 给一个 crossDomain 地址，网页流程要靠它把 cookie 撒到 .bilibili.com 各子域）
+       86090=已扫码未确认，86038=已失效/过期。我先前读的是外层 code，于是三种状态全被当成成功。 */
     const d = body?.data
-    const code = Number(d?.code ?? body?.code ?? 0)
-    if (code === 0) {
-      const ck = pickCookies(res)
-      const c = { sessdata: ck.sessdata || '', bili_jct: ck.bili_jct || '', buvid3: ck.buvid3 || '', dedeuserid: ck.DedeUserID || '' }
-      if (!c.sessdata) return { state: 'scanned', code, message: '扫码了但响应里没有 sessdata —— 重试一次或改用别处凭证' }
-      writeCred(c)
-      cred = c
-      loginStore.delete(key)
-      const w = await whoami()
-      log(`登录成功：${w.uname}（uid ${w.uid}）`)
-      return { state: 'ok', code, credential: { sessdata: 'set', bili_jct: 'set', buvid3: 'set', dedeuserid: c.dedeuserid }, whoami: w }
+    /* 只认 data.code：外层 code=0 意思是"这次请求成功"，拿它兜底会把"没给内层码"误判成登录成功那一路 */
+    const inner = Number(d?.code ?? -1)
+    const noteByCode = { 0: '已确认登录', 86038: '二维码已失效（过期），重新 start 一张', 86090: '已扫码、等手机上点确认' }
+    if (inner === 86038) return { state: 'expired', code: inner, message: d?.message || noteByCode[86038], raw_code_outer: body?.code }
+    if (inner === 86090) return { state: 'scanned', code: inner, message: d?.message || noteByCode[86090] }
+    if (inner !== 0) return { state: 'waiting', code: inner, message: d?.message || body?.message || '还没扫' }
+    const ck = pickCookies(res)
+    const c = { sessdata: ck.SESSDATA || ck.sessdata || '', bili_jct: ck.bili_jct || ck.BILI_JCT || '', buvid3: ck.buvid3 || '', dedeuserid: ck.DedeUserID || ck.dedeuserid || '' }
+    if (!c.sessdata) return { state: 'scanned', code: inner, message: 'data.code 已是 0 但响应里没有 SESSDATA —— 再 poll 一次或用 refresh_token 那条路', refresh_token: d?.refresh_token || null }
+    /* 补 crossDomain 那一步：跟着 data.url 走一遍，让 B站 把 cookie 撒到各子域（网页流程本就这么走） */
+    let cross = null
+    if (d?.url) {
+      try {
+        const cr = await fetch(d.url, { headers: { 'user-agent': UA, referer: REFERER, cookie: `SESSDATA=${encodeURIComponent(c.sessdata)}; bili_jct=${c.bili_jct}; DedeUserID=${c.dedeuserid}` }, redirect: 'follow', signal: AbortSignal.timeout(liveCfg().requestTimeoutMs) })
+        cross = { status: cr.status, final_url: String(cr.url || '').slice(0, 120), ok: cr.ok }
+      } catch (e) { cross = { failed: String(e?.message || e).slice(0, 90) } }
     }
-    if (code === 86038) return { state: 'expired', code, message: '二维码已过期，重新 start 一张' }
-    if (code === 86090) return { state: 'scanned', code, message: '已扫码、等手机上点确认' }
-    return { state: 'waiting', code, message: d?.message || body?.message || '还没扫' }
+    writeCred(c, 'scan')
+    cred = c
+    loginStore.delete(key)
+    const w = await whoami()
+    log(`扫码登录成功：${w.uname}（uid ${w.uid}）${cross && cross.ok ? '，crossDomain 已补' : ''}`)
+    return { state: 'ok', code: inner, credential: { sessdata: 'set', bili_jct: 'set', buvid3: c.buvid3 || '(poll 没回 buvid3)', dedeuserid: c.dedeuserid }, refresh_token: d?.refresh_token || null, timestamp: d?.timestamp ?? null, crossdomain: cross, whoami: w }
   }
-
   async function resolveUid(nameWanted) {
     const cache = (() => { try { return JSON.parse(fs.readFileSync(uidFile, 'utf8')) } catch { return {} } })()
     const hit = cache[nameWanted]
@@ -617,15 +652,24 @@ export function apply(ctx, config = {}) {
       name: str('要查 UID 的昵称（action=uid 时必填）'),
     },
     output: { schema: outObj() , render },
-    execute: async (args) => {
+    execute: async (args, exec) => {
       const a = String(args?.action || 'status')
-      if (a === 'start') return { ok: true, ...await loginStart() }
+      if (a === 'start') {
+        const r = await loginStart()
+        const p = r.qr_png && r.qr_png.path
+        if (!p) return { ok: true, ...r }
+        let buffer = null
+        try { buffer = fs.readFileSync(p) } catch { /* 刚写的就没了，算它不走 */ }
+        const imgs = buffer ? [{ buffer, mediaType: 'image/png' }] : []
+        const at = imgs.length ? await __attachImages((k) => ctx.get?.(k), exec, imgs) : { ok: false, reason: 'no_png' }
+        return { ok: true, ...r, image_attached: at.ok, ...(at.ok ? { images: at.refs } : { image_skip_reason: at.reason, hint: at.hint }) }
+      }
       if (a === 'poll') return { ok: true, ...await loginPoll(args.key) }
       if (a === 'import') return { ok: importCred(), message: importCred() ? '已从别处抄来一份凭证' : '没找到可抄的凭证文件（试了 bili-duty 那两处）；那就 start + poll 扫一次码' }
       if (a === 'clear') { try { fs.rmSync(credFile) } catch { /* 本来就没有 */ } cred = null; return { ok: true, message: '已删掉本机凭证' } }
       if (a === 'uid') { const n = String(args?.name || '').trim(); if (!n) throw new Error('action=uid 要传 name'); return { ok: true, ...await resolveUid(n) } }
       const w = await whoami()
-      return { ok: true, ...w, home, credentialFile: credFile, imported: !!readCred() }
+      return { ok: true, ...w, home, credentialFile: credFile, imported: credSource === 'import', credentialSource: credSource }
     },
     presentCall: (args) => ({ card: 'generic', title: `bili_auth ${args?.action || 'status'}`, kind: 'execute', rawInput: args?.action || 'status' }),
   })
