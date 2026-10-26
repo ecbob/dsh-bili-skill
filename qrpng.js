@@ -61,21 +61,32 @@ export function alignCenters(version) {
 export function geometryOf(version) {
   return { size: 17 + 4 * version, centers: alignCenters(version) }
 }
-/** 码字空间 = (总模块 - 功能区)/8。功能区：三个 8x8 定位角块(含分隔符)=192、两条定时线=2*(size-16)（横 11 格、纵 10 格，多的那格就是格式里那个 1）、
- *  格式信息 31 格(两条复制 15+15 加暗模块)、每个对齐图案 25、版本信息 36(size>=41)。 */
-export function totalCodewords(version) {
+/** 码字空间不再由我手算常数（先前那版：v2..v5 一律多算 1 格、v6 少算 4 格 —— 三个版本各错一处，都是我自己凑的）。
+ *   改成「照我自己那张功能区表数格子」：与 buildMatrix 共用同一套 finder / timing / align / format+dark 规则，
+ *   从此只有一份真相。实测锚：v2 的功能区真集是 266 格（照参考实现的快照逐格核过，差异 0）。
+ *   留给数据的格 = size² − 功能区；能装的码字 = floor(格/8)，余下的格（v2 是 7 格）留空、渲染成亮。 */
+function funcMaskOf(version) {
   const size = 17 + 4 * version
+  const f = Array.from({ length: size }, () => new Uint8Array(size))
+  const set = (r, c) => { if (r >= 0 && c >= 0 && r < size && c < size) f[r][c] = 1 }
+  for (const [or, oc] of [[0, 0], [0, size - 7], [size - 7, 0]]) for (let r = -1; r <= 7; r++) for (let c = -1; c <= 7; c++) set(or + r, oc + c)
+  for (let i = 0; i < size; i++) { set(6, i); set(i, 6) }
   const cs = alignCenters(version)
-  /* 对齐图案区数 = 交叉点数 - 被定位图案吞掉的 3 个角：v2/v3 恒 1 个，v4..v6 是 4 个。
-     参考实现的码字数 100/134/172 反证：v4 是 3x3 - 3 = 6 个中心、4 个区，不是 9 个区。 */
-  const nCenters = cs.length
-  const regions = nCenters >= 2 ? nCenters * nCenters - 3 : 0   // 交叉点数 - 被三个定位图案吞掉的角；v2/v3 各只有 1 对中心 ⇒ 1 个对齐图案
-  const alignArea = regions * 25
-  /* 格式信息 30 格：两套复制各 15，都不与定位/分隔/定时重叠（暗模块就在右下那 15 格里） */
-  const reserved = 192 + 2 * (size - 16) + 30 + alignArea + (size >= 41 ? 36 : 0)   // 定位角块(含分隔符) + 定时线 + 格式 + 对齐 + 版本信息
-  const dataModules = size * size - reserved
+  for (const ar of cs) for (const ac of cs) {
+    if ((ar === 6 && ac === 6) || (ar === 6 && ac === size - 7) || (ar === size - 7 && ac === 6)) continue
+    for (let r = ar - 2; r <= ar + 2; r++) for (let c = ac - 2; c <= ac + 2; c++) set(r, c)
+  }
+  for (const [r, c] of formatPath(size).reserved) set(r, c)
+  if (size >= 41) { for (let r = 0; r < 6; r++) for (let c = size - 11; c <= size - 9; c++) set(r, c); for (let r = size - 11; r <= size - 9; r++) for (let c = 0; c < 6; c++) set(r, c) }
+  let n = 0
+  for (let r = 0; r < size; r++) for (let c = 0; c < size; c++) if (f[r][c]) n++
+  return { size, f, reservedCells: n }
+}
+export function totalCodewords(version) {
+  const { size, reservedCells } = funcMaskOf(version)
+  const dataModules = size * size - reservedCells
   const cw = Math.floor(dataModules / 8)
-  return { size, cw, dataModules, reserved, remainderBits: dataModules - cw * 8 }
+  return { size, cw, dataModules, reserved: reservedCells, remainderBits: dataModules - cw * 8 }
 }
 /* L 档分块（照参考实现的 L 行）：[块数, 总码字, 数据码字] */
 const RS_BLOCKS_L = { 2: [[1, 44, 34]], 3: [[1, 70, 55]], 4: [[1, 100, 80]], 5: [[1, 134, 108]], 6: [[2, 86, 68]] }
@@ -272,7 +283,7 @@ export function placeFormat(M, size, ecLevel, maskIdx) {
   const bits = formatBits(ecLevel, maskIdx)
   const { tl, br, dark } = formatPath(size)
   for (let i = 0; i < 15; i++) {
-    const v = bits[14 - i] === "1" ? 1 : 0   // formatBits 给的是 MSB-first 串（最左 = bit14），库按 (bits>>i)&1 取是 LSB-first ⇒ 必须反着索引（我先前直取 bits[i]，整套镜像）
+    const v = Number(bits[14 - i]) ? 1 : 0   // formatBits 回的是数字数组（下标 0 = bit14）：先前写成 === "1"（字符串）恒 false ⇒ 15 位全落成 0，只有暗模块那颗硬写的 1 是对的；也解释了为什么我前两次改位序都"看不到效果"
     M[tl[i][0]][tl[i][1]] = v
     M[br[i][0]][br[i][1]] = v
   }

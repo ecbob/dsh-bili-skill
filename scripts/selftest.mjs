@@ -128,6 +128,33 @@ ok('effect 挂上了 skill provider 的 disposer', a.effects.some(([, l]) => Str
   const win = await probePollShape({ code: 0, data: { code: 0, url: "https://passport.biligame.com/x/passport-login/web/crossDomain?ticket=x", refresh_token: "rt", timestamp: 1 } }, ["SESSDATA=abc; Path=/; Domain=bilibili.com", "bili_jct=def; Path=/", "DedeUserID=42; Path=/"])
   ok("成功那一路判成 ok 且读的是 SESSDATA 这个大小写（我先前读小写 sessdata，把真成功误报成\"扫码了但没 sessdata\"）", win.state === "ok" && win.sessdata === "abc" && win.dedeuserid === "42", JSON.stringify(win))
 }
+/* ── 1c. qrpng：功能区格数/容量/格式位落格（外部解码器的活体在 .dsh\.tmp-src\qr-check.mjs，这里只做不依赖它的确定性断言）── */
+{
+  const QR = await import(pathToFileURL(path.join(pkgDir, 'qrpng.js')).href)
+  const EXPECT = { 2: { cw: 44, bytes: 32 }, 3: { cw: 70, bytes: 53 }, 4: { cw: 100, bytes: 78 }, 5: { cw: 134, bytes: 106 } }
+  for (const [v, want] of Object.entries(EXPECT)) {
+    const g = QR.totalCodewords(Number(v))
+    const cap = QR.capacityBytes(Number(v), 'L')
+    ok('qrpng v' + v + '-L：几何码字空间与权威分块表一致（' + g.cw + '），可装 ' + cap.bytes + ' 字节', g.consistent === undefined || g.cw === want.cw, JSON.stringify({ g, want }))
+    ok('qrpng v' + v + '-L：字节容量对上权威表（' + want.bytes + '）', cap.bytes === want.bytes && cap.dataCw === want.cw - cap.ecTotal, JSON.stringify(cap))
+  }
+  /* 功能区真集：v2 = 266 格（照参考实现的快照逐格核过，差异 0）*/
+  const g2 = QR.totalCodewords(2)
+  ok('qrpng v2 功能区 = 266 格（不是我自己凑的 281）、留给数据 359 格、余 7 格留空', g2.reserved === 266 && g2.dataModules === 359 && g2.remainderBits === 7, JSON.stringify(g2))
+  /* 格式位必须真写进格子：先前我写 bits[i] === "1"（对数字数组比字符串）恒 false ⇒ 15 位全落成 0，还连着两次"改了位序但看不到效果" */
+  const n = 25
+  const M = Array.from({ length: n }, () => new Array(n).fill(0))
+  QR.placeFormat(M, n, 'L', 0)
+  const cells = []
+  for (let x = 0; x <= 8; x++) if (x !== 6) cells.push([8, x])
+  for (let y = 7; y >= 0; y--) if (y !== 6) cells.push([y, 8])
+  let bits = 0
+  for (const [r, c] of cells) bits = (bits << 1) | M[r][c]
+  ok('placeFormat 真把 15 位写进格子（按解码器读序回读 = 0x77C4，不是全 0）', bits === 0x77c4, '0x' + bits.toString(16).toUpperCase())
+  ok('暗模块 (size-8,8) 被写成黑', M[n - 8][8] === 1, String(M[n - 8][8]))
+  ok('超容量如实回 too_long（不硬出图）', QR.qrPng('x'.repeat(200), { ecLevel: 'L' }).why === 'too_long', JSON.stringify(QR.qrPng('x'.repeat(200), { ecLevel: 'L' })).slice(0, 120))
+}
+
 /* ── 2. 宿主 schema 规则自查：properties/required/additionalProperties 只许挂在 type:'object' 上 ── */
 const TYPES = ['object', 'array', 'string', 'number', 'integer', 'boolean', 'null']
 const hostViolations = (node, p = '$', out = []) => {
