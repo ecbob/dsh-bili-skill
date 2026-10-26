@@ -1,7 +1,7 @@
 /**
  * qrvendor.js —— 用 vendored 的 qrcode-generator（MIT）出二维码图
  *
- * 为什么还留着这个文件：自研 qrpng.js 已修通（jsQR 逐字验通 v2..v6/L），登录路径默认走自研；
+ * 为什么还留着这个文件：自研 qrpng.js 已修通（jsQR 逐字验通 v2..v10 × L/M/Q/H 四档），登录路径默认走自研；
  *   这份 vendored 参考实现（覆盖 v1..v40、含非 byte 模式）留作**兜底与对照裁判** —— 链接超长或超出我范围时回落。
  * 两份都在包里：qrpng.js 是我继续修的那份（由 selftest 里 jsQR 的 roundtrip 断言盯着），qrvendor.js 是当前能用的那份。
  * 出图参数：模块放大 8 倍、四周静区 4 模块（8x8 像素点）—— 这是本机实测能被解码器接受的最小安全形状。

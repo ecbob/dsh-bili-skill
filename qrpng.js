@@ -356,7 +356,7 @@ export function qrPng(text, opts = {}) {
   const ecLevel = opts.ecLevel || "L"
   const bytes = Buffer.from(text, "utf8")
   const version = opts.version || pickVersion(bytes.length, ecLevel)
-  if (!version) return { ok: false, why: "too_long", message: `这段文本 ${bytes.length} 字节，v2..v6/L 装不下（上限 134 字节）`, byteLen: bytes.length }
+  if (!version) { const top = capacityBytes(10, ecLevel); return { ok: false, why: "too_long", message: `这段文本 ${bytes.length} 字节，v2..v10/${ecLevel} 装不下（上限 ${top && top.bytes ? top.bytes : '?'} 字节）`, byteLen: bytes.length } }
   const st = structureOf(version, ecLevel)
   if (!st) return { ok: false, why: "table_mismatch", message: `v${version}-${ecLevel} 没有分块数据`, table: st }
   const cap = capacityBytes(version, ecLevel)

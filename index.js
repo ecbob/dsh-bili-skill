@@ -1,5 +1,5 @@
 /**
- * bili-skill —— B站 能力的「底座」插件（纯 JS、零运行时依赖）
+ * dsh-bili-skill —— B站 能力的「底座」插件（纯 JS、零运行时依赖）
  *
  * 设计（2026-10-25，与 c1overzz/dsh-bili-scroll 并存、互不抢地盘）：
  *   base 只管四件事：① 登录与凭证 ② 身份（昵称 ↔ UID）③ 一条带 Cookie/CSRF/WBI 签名的通用 API 通道
@@ -8,7 +8,7 @@
  *   没有值班轮、没有定时器、没有日报、没有专用 profile，也不碰 bili-scroll 的家目录。
  *
  * 家目录（全在这一个目录里，删掉即彻底回滚）：
- *   $DSH_HOME/bili-skill/
+ *   $DSH_HOME/dsh-bili-skill/
  *     config.json              运行时配置（设置页/工具改，优先于 patch config）
  *     bili_credential.json     sessdata / bili_jct / buvid3 / dedeuserid（字段名与 bili-scroll 一致，可直接互抄）
  *     uid-cache.json           昵称 → UID（带时间戳，TTL 7 天）
@@ -19,7 +19,7 @@
  *
  * 拓展点（按便宜程度排序）：
  *   1) 改 `skills/<name>.md` —— 判入口径、端点清单、红线，全是 markdown
- *   2) 在 `bili-skill/skills/<name>.md` 放同名文件 —— 覆盖包内那份，升级不被冲（provider 每次现读磁盘）
+ *   2) 在 `dsh-bili-skill/skills/<name>.md` 放同名文件 —— 覆盖包内那份，升级不被冲（provider 每次现读磁盘）
  *   3) 在 `SKILL_NAMES` 里加一个名字 + 一个 md 文件 —— 多一个能力，不加工具
  *   4) 在 `TOOLS` 之下加一只 `ctx.tools.register(...)` —— 需要新原子操作时才动
  *
@@ -34,7 +34,7 @@ import { shoot, clearFrames, listFrames, frameFileName } from './frames.js'
 import { qrPng } from './qrpng.js'
 import { qrPngVendor } from './qrvendor.js'
 
-export const name = 'bili-skill'
+export const name = 'dsh-bili-skill'
 /** 硬注入：这两样在本 profile 里必然存在（tools 注册 / skills 注册表） */
 export const inject = ['tools', 'skills']
 
@@ -245,48 +245,62 @@ function coerce(k, v) {
   if (k === 'uidTtlDays') return Math.max(1, Math.min(90, Math.round(n)))
   return n
 }
-// 改名迁移：老家目录叫旧名（常量 OLD_HOME_NAME），插件现在叫 bili-skill ⇒ 首次启动把凭证/账本/帧/配置/日志搬过去，老目录改名留档，不静默丢数据
-const OLD_HOME_NAME = 'bili-base'
-const OLD_DIR_RENAMED = (stamp) => OLD_HOME_NAME + '.migrated-' + stamp
-export function migrateOldHome(nextHome, baseDir, log) {
-  const oldDir = path.join(baseDir, OLD_HOME_NAME)
+// 改名迁移：插件改过两次名（bili-base → bili-skill → dsh-bili-skill），家目录默认值跟着包名走 ⇒
+// 首次启动按「由近到远」把还活着的旧名目录补进新家（不覆盖已有），再把旧目录改名成 <旧名>.migrated-<UTC> 留档，绝不静默丢数据。
+const LEGACY_HOME_NAMES = ['bili-skill', 'bili-base']   // 由近到远；新家 = 当前插件名（dirOf 的默认段）
+const MARK_PREFIX = '.migrated-to-'                     // 旧壳里的「已搬走」标记（名字带去向）；见着任何一条就永不重搬这个壳
+const OLD_DIR_RENAMED = (oldName, stamp) => oldName + '.migrated-' + stamp
+/** 搬单个旧名目录；不存在 / 已搬过（壳里有 .migrated-to-* 标记）回 null。oldName 默认取最近那个旧名。 */
+export function migrateOldHome(nextHome, baseDir, log, oldName = LEGACY_HOME_NAMES[0]) {
+  const oldDir = path.join(baseDir, oldName)
   if (oldDir === nextHome || !fs.existsSync(oldDir)) return null
-  const MARK = ".migrated-to-bili-skill"
-  if (fs.existsSync(path.join(oldDir, MARK))) return null   // 已经搬过（哪怕旧壳还在）就不再搬，也不重复报
+  const MARK = MARK_PREFIX + path.basename(nextHome)
+  let marked = false
+  try { marked = fs.readdirSync(oldDir).some((f) => String(f).startsWith(MARK_PREFIX)) } catch { marked = false }
+  if (marked) return null   // 已经搬过（哪怕旧壳还在）就不再搬，也不重复报
   if (!fs.existsSync(nextHome)) fs.mkdirSync(nextHome, { recursive: true })
   const stamp = new Date().toISOString().replace(/[-:TZ.]/g, "").slice(0, 14)
-  const logs = []
   let copied = 0, failed = 0
   const walk = (from, to, move) => {
     fs.mkdirSync(to, { recursive: true })
     for (const e of fs.readdirSync(from, { withFileTypes: true })) {
       const a = path.join(from, e.name), b = path.join(to, e.name)
       if (e.isDirectory()) { walk(a, b, move); continue }
-      if (e.name === MARK.slice(1)) { continue }   // 标记文件本身不算搬运内容
+      if (String(e.name).startsWith(MARK_PREFIX)) { continue }   // 标记文件本身不算搬运内容（留在旧壳/归档里）
       if (fs.existsSync(b)) continue
       try { if (move) fs.renameSync(a, b); else fs.copyFileSync(a, b); copied++ } catch { failed++ }
     }
   }
-  try { fs.writeFileSync(path.join(oldDir, MARK), JSON.stringify({ to: nextHome, at: new Date().toISOString(), note: "插件已从旧名改名为 bili-skill；这份是搬家后留下的存档，插件不再往这里写" }), "utf8") } catch (e) { log("迁移：标记文件写不上（" + String(e?.code || e) + "），仍继续搬") }
+  try { fs.writeFileSync(path.join(oldDir, MARK), JSON.stringify({ to: nextHome, at: new Date().toISOString(), note: `插件已从旧名改名为 ${path.basename(nextHome)}；这份是搬家后留下的存档，插件不再往这里写` }), "utf8") } catch (e) { log("迁移：标记文件写不上（" + String(e?.code || e) + "），仍继续搬") }
   try { walk(oldDir, nextHome, false) } catch (e) { failed++; log("迁移：预复制出错 " + String(e?.message || e)) }   // 先把老家内容补进新家（不覆盖已有）
   let how = null
-  try { fs.renameSync(oldDir, path.join(baseDir, OLD_DIR_RENAMED(stamp))); how = "rename-dir" } catch (e) { how = null; log("迁移：整目录改名不成（" + String(e?.code || e?.code === undefined ? "" : e.code) + String(e?.message || "").slice(0, 60) + "）⇒ 走退路") }
+  try { fs.renameSync(oldDir, path.join(baseDir, OLD_DIR_RENAMED(oldName, stamp))); how = "rename-dir" } catch (e) { how = null; log("迁移：整目录改名不成（" + String(e?.code || e?.code === undefined ? "" : e.code) + String(e?.message || "").slice(0, 60) + "）⇒ 走退路") }
   if (how !== "rename-dir") {
-    const arch = path.join(baseDir, OLD_HOME_NAME + ".migrated-" + stamp)
+    const arch = path.join(baseDir, OLD_DIR_RENAMED(oldName, stamp))
     try { walk(oldDir, arch, true) } catch (e) { failed++; log("迁移退路：搬内容时出错 " + String(e?.message || e)) }
     try { fs.rmSync(oldDir, { recursive: true, force: true }); if (!fs.existsSync(oldDir)) how = "move-contents" } catch (e) { how = "contents-moved-shell-left"; log("迁移退路：内容已挪走但旧壳删不掉（被占用），里面只剩标记文件，不影响新家") }
     if (how === "move-contents" || how === "contents-moved-shell-left") log("迁移退路：内容已挪进 " + path.basename(arch) + "/")
   }
-  log("改名迁移完成：复制/挪动 " + copied + " 个文件" + (failed ? "、失败 " + failed + " 个" : "") + "；方式=" + (how || "failed") + "；新家=" + nextHome)
+  log(`改名迁移完成（${oldName} → ${path.basename(nextHome)}）：复制/挪动 ${copied} 个文件` + (failed ? "、失败 " + failed + " 个" : "") + "；方式=" + (how || "failed") + "；新家=" + nextHome)
   return { copied, failed, how }
 }
-function dirOf(p) { return p && String(p).trim() ? String(p).trim() : path.join(process.env.DSH_HOME || path.join(os.homedir(), '.dsh'), 'bili-skill') }
+/** 由近到远逐个搬：近的先把新数据占住，远的只补空缺。一次都没搬成回 null。 */
+export function migrateLegacyHomes(nextHome, baseDir, log) {
+  const out = []
+  for (const oldName of LEGACY_HOME_NAMES) {
+    if (path.join(baseDir, oldName) === nextHome) continue
+    const r = migrateOldHome(nextHome, baseDir, log, oldName)
+    if (r) out.push({ from: oldName, ...r })
+  }
+  return out.length ? out : null
+}
+function dirOf(p) { return p && String(p).trim() ? String(p).trim() : path.join(process.env.DSH_HOME || path.join(os.homedir(), '.dsh'), 'dsh-bili-skill') }
 
 export function apply(ctx, config = {}) {
   const cfg = loadCfg(config)
   const home = dirOf(cfg.home)
-  // 入口先搬一次，不只等挂载（本机实测：新实例迟迟不挂载，期间直接用工具写账就已经分家了）；手动指定过 config.home 的不搬
-  if (path.basename(home) !== OLD_HOME_NAME) migrateOldHome(home, path.dirname(home), (m) => { try { ctx.logger?.info?.(`[bili-skill] ${m}`) } catch { /* 没 logger 就算了 */ } })
+  // 入口先搬一次，不只等挂载（本机实测：新实例迟迟不挂载，期间直接用工具写账就已经分家了）；手动把 config.home 指到旧名目录的不搬
+  if (!LEGACY_HOME_NAMES.includes(path.basename(home))) migrateLegacyHomes(home, path.dirname(home), (m) => { try { ctx.logger?.info?.(`[dsh-bili-skill] ${m}`) } catch { /* 没 logger 就算了 */ } })
   const credFile = path.join(home, 'bili_credential.json')
   const uidFile = path.join(home, 'uid-cache.json')
   const ledgerDir = path.join(home, 'ledger')
@@ -308,7 +322,7 @@ export function apply(ctx, config = {}) {
   const liveCfg = () => { try { return { ...cfg, ...JSON.parse(fs.readFileSync(path.join(home, 'config.json'), 'utf8')) } } catch { return cfg } }
   const log = (m) => {
     try { fs.appendFileSync(logFile, `${new Date().toISOString()}  ${m}\n`, 'utf8') } catch { /* 日志写不进也别炸 */ }
-    if (cfg.logLevel !== 'silent') { try { ctx.logger?.[cfg.logLevel === 'debug' ? 'debug' : 'info']?.(`[bili-skill] ${m}`) } catch { /* 没 logger 就算了 */ } }
+    if (cfg.logLevel !== 'silent') { try { ctx.logger?.[cfg.logLevel === 'debug' ? 'debug' : 'info']?.(`[dsh-bili-skill] ${m}`) } catch { /* 没 logger 就算了 */ } }
   }
   const note = (m) => { if (cfg.logLevel === 'debug') log(m) }
 
@@ -500,7 +514,7 @@ export function apply(ctx, config = {}) {
     const d = r.json?.data
     if (!d?.qrcode_key || !d?.url) throw new Error(`生成二维码失败：${r.json?.message || '返回里没有 qrcode_key'}`)
     loginStore.set(d.qrcode_key, { url: d.url, at: Date.now() })
-    /* 出二维码图：先用自研 qrpng（已用外部解码器 jsQR 逐字验通 v2..v6/L，登录链接约 116..118 字节 ⇒ 落 v6），
+    /* 出二维码图：先用自研 qrpng（已用外部解码器 jsQR 逐字验通 v2..v10 × L/M/Q/H 四档；登录链接约 116..145 字节 ⇒ 落 v6/v7），
        它不成就回落到 vendored 参考实现（那条覆盖 v1..v40，长链接或超出我范围时兜底）。 */
     let qr = qrPng(d.url)
     if (!qr.ok) { const fb = qrPngVendor(d.url); if (fb.ok) { log(`自研 QR 没出图（${qr.why}），回落 vendored：${qr.message || ''}`); qr = { ...fb, fellback_from: qr.why } } }
@@ -651,7 +665,7 @@ export function apply(ctx, config = {}) {
 
   tool({
     name: 'bili_auth',
-    description: 'B站 登录与身份底座：action=status（登录状态/whoami）| start（出新二维码）| poll（查扫码结果，要 key）| import（从别处抄一份凭证，省一次扫码）| clear（删掉本机凭证）| uid（昵称 → UID，带缓存）。凭证是 4 个 cookie 字段，写在 bili-skill 自己的家目录。',
+    description: 'B站 登录与身份底座：action=status（登录状态/whoami）| start（出新二维码）| poll（查扫码结果，要 key）| import（从别处抄一份凭证，省一次扫码）| clear（删掉本机凭证）| uid（昵称 → UID，带缓存）。凭证是 4 个 cookie 字段，写在 dsh-bili-skill 自己的家目录。',
     parameters: {
       action: str('status | start | poll | import | clear | uid', true),
       key: str('poll 用的 key（action=poll 时必填）'),
@@ -790,7 +804,7 @@ export function apply(ctx, config = {}) {
 
   tool({
     name: 'bili_ledger',
-    description: '记账底座：action=tables（列有哪些账本）| read（读，默认最后 50 行）| append（追加行，可按 key 字段去重）| delete（按 key 删一行）。每表一个 <表名>.jsonl，全在 bili-skill/ledger/ 下。表名建议：seen（刷过）、comment（发过的评论）、dm（私信往来）、note（值得记的事）。',
+    description: '记账底座：action=tables（列有哪些账本）| read（读，默认最后 50 行）| append（追加行，可按 key 字段去重）| delete（按 key 删一行）。每表一个 <表名>.jsonl，全在 dsh-bili-skill/ledger/ 下。表名建议：seen（刷过）、comment（发过的评论）、dm（私信往来）、note（值得记的事）。',
     parameters: {
       action: str('tables | read | append | delete', true),
       table: str('表名（默认 notes；只留字母数字_和中文）'),
@@ -807,7 +821,7 @@ export function apply(ctx, config = {}) {
   // ───────────────────────── 六份能力说明书（skills） ─────────────────────────
   const parseFront = (raw, where) => {
     const m = /^---\r?\n([\s\S]*?)\r?\n---(?:\r?\n|$)/u.exec(raw)
-    if (!m) throw new Error(`bili-skill: ${where} 没有 YAML frontmatter`)
+    if (!m) throw new Error(`dsh-bili-skill: ${where} 没有 YAML frontmatter`)
     const meta = {}
     let key = null
     for (const line of m[1].split(/\r?\n/)) {
@@ -815,7 +829,7 @@ export function apply(ctx, config = {}) {
       if (kv) { key = kv[1]; meta[key] = kv[2].trim().replace(/^['"]|['"]$/g, '') }
       else if (key && /^\s+\S/.test(line)) meta[key] += ' ' + line.trim()
     }
-    if (typeof meta.description !== 'string' || !meta.description) throw new Error(`bili-skill: ${where} 缺 description`)
+    if (typeof meta.description !== 'string' || !meta.description) throw new Error(`dsh-bili-skill: ${where} 缺 description`)
     return { name: meta.name, description: meta.description, whenToUse: meta.whenToUse || undefined, content: raw.slice(m[0].length).trim() }
   }
   const skillPath = (n) => { const over = path.join(home, 'skills', `${n}.md`); return fs.existsSync(over) ? { file: over, from: 'home' } : { file: path.join(here, 'skills', `${n}.md`), from: 'package' } }
@@ -824,7 +838,7 @@ export function apply(ctx, config = {}) {
     try {
       const { file, from } = skillPath(n)
       const s = parseFront(fs.readFileSync(file, 'utf8'), n)
-      candidates.push({ name: s.name || n, description: s.description, ...(s.whenToUse ? { whenToUse: s.whenToUse } : {}), invocation: { modelInvocable: true, userInvocable: true }, provider: 'bili-skill', source: from === 'home' ? 'override' : 'bundled', rank: 600, resourceBase: { kind: 'directory', path: path.dirname(file).split(path.sep).join('/') }, locator: file, from })
+      candidates.push({ name: s.name || n, description: s.description, ...(s.whenToUse ? { whenToUse: s.whenToUse } : {}), invocation: { modelInvocable: true, userInvocable: true }, provider: 'dsh-bili-skill', source: from === 'home' ? 'override' : 'bundled', rank: 600, resourceBase: { kind: 'directory', path: path.dirname(file).split(path.sep).join('/') }, locator: file, from })
     } catch (e) { log(`⚠️ skill ${n} 没注册上：${String(e?.message || e).slice(0, 140)}`) }
   }
   // 目录 = 包内 skills/*.md 与家目录 skills/*.md 的并集（家目录那份赢）。
@@ -850,7 +864,7 @@ export function apply(ctx, config = {}) {
           description: s.description,
           ...(s.whenToUse ? { whenToUse: s.whenToUse } : {}),
           invocation: { modelInvocable: true, userInvocable: true },
-          provider: 'bili-skill',
+          provider: 'dsh-bili-skill',
           source: from === 'home' ? 'override' : 'bundled',
           rank: 600,
           resourceBase: { kind: 'directory', path: path.dirname(file).split(path.sep).join('/') },
@@ -873,7 +887,7 @@ export function apply(ctx, config = {}) {
   const liveVersion = () => { try { return JSON.parse(fs.readFileSync(path.join(here, 'package.json'), 'utf8')).version } catch { return PKG.version } }
   const footerFor = (candidateName) => {
     const cred = readCred()
-    return '\n\n## 本插件的底座（bili-skill v' + liveVersion() + '）\n\n'
+    return '\n\n## 本插件的底座（dsh-bili-skill v' + liveVersion() + '）\n\n'
       + '**说明书只是指令，本身不带记忆。** 常驻工具 5 只：`bili_auth`（登录/身份/凭证）、`bili_api`（通用端点，自动 Cookie/CSRF/WBI）、`bili_shot`（故事板定位 + 从拼图里裁成单独一帧，帧作为图片附件直接回会话）、`bili_frames`（keep/clear/list 管 `frames/`）、`bili_ledger`（记账：tables/read/append/delete，按 key 去重）。'
       + '**记忆在这儿**：家目录 ' + home + '\n'
       + '- 账本 ledger/：' + ledgerIndex() + ' —— 要看内容用 `bili_ledger {action:"read", table:"…", limit:N}`\n'
@@ -906,12 +920,12 @@ export function apply(ctx, config = {}) {
       } catch (e) { log('⚠️ 监视 ' + dir + ' 失败（' + (e?.code || e?.message || '') + '）⇒ 新增/改名的 skill 要重组才进目录') }
     }
     return {
-      name: 'bili-skill',
+      name: 'dsh-bili-skill',
       list: () => Promise.resolve(buildCandidates().map(({ locator, from, ...rest }) => ({ ...rest }))),
       async get(candidate) {
         const { file } = skillPath(candidate.name)
         const s = parseFront(fs.readFileSync(file, 'utf8'), candidate.name)
-        return { ...candidate, invocation: { modelInvocable: true, userInvocable: true }, provider: 'bili-skill', content: s.content + footerFor(candidate.name) }
+        return { ...candidate, invocation: { modelInvocable: true, userInvocable: true }, provider: 'dsh-bili-skill', content: s.content + footerFor(candidate.name) }
       },
       close: () => { for (const w of watchers) { try { w.close() } catch { /* 已经关了 */ } } },
     }
@@ -921,22 +935,22 @@ export function apply(ctx, config = {}) {
   ctx.effect(() => () => {
     try { provider?.close?.() } catch { /* 已经关了 */ }
     if (typeof offSkills === 'function') offSkills()
-  }, 'bili-skill: skills provider')
+  }, 'dsh-bili-skill: skills provider')
 
   // ───────────────────────── 状态口（给排错/以后做 UI 用） ─────────────────────────
-  const statusBody = () => ({ ok: true, plugin: 'bili-skill', version: liveVersion(), home, loggedIn: !!readCred()?.sessdata, credentialFile: credFile, ledgerDir, framesDir: framesDir, logFile, skills: buildCandidates().map((c) => ({ name: c.name, from: c.from, source: c.source })), ledger: ledgerIndex(), config: cfg })
+  const statusBody = () => ({ ok: true, plugin: 'dsh-bili-skill', version: liveVersion(), home, loggedIn: !!readCred()?.sessdata, credentialFile: credFile, ledgerDir, framesDir: framesDir, logFile, skills: buildCandidates().map((c) => ({ name: c.name, from: c.from, source: c.source })), ledger: ledgerIndex(), config: cfg })
   ctx.inject(['webServer'], (w) => {
     const server = w.get('webServer')
     if (!server?.register) { log('⚠️ 没有 webServer，状态口没挂上（工具与 skill 不受影响）'); return }
     const off = server.register({
-      kind: 'prefix', path: '/api/bili-skill',
+      kind: 'prefix', path: '/api/dsh-bili-skill',
       handler: (req, res) => {
         const p = String(req.url || '').split('?')[0]
-        if (req.method === 'GET' && (p === '/api/bili-skill/status' || p === '/api/bili-skill/')) { res.writeHead(200, { 'content-type': 'application/json; charset=utf-8', 'cache-control': 'no-store' }).end(JSON.stringify(statusBody())); return }
+        if (req.method === 'GET' && (p === '/api/dsh-bili-skill/status' || p === '/api/dsh-bili-skill/')) { res.writeHead(200, { 'content-type': 'application/json; charset=utf-8', 'cache-control': 'no-store' }).end(JSON.stringify(statusBody())); return }
         res.writeHead(404, { 'content-type': 'application/json; charset=utf-8', 'cache-control': 'no-store' }).end('{"ok":false,"error":"no-route"}')
       },
     })
-    w.effect(() => (typeof off === 'function' ? off : () => {}), 'bili-skill: status route')
+    w.effect(() => (typeof off === 'function' ? off : () => {}), 'dsh-bili-skill: status route')
   })
 
   log(`已挂载（家=${home}，工具 ${registered} 只，skill ${buildCandidates().length} 份，凭证=${readCred()?.sessdata ? '有' : '无'}）`)

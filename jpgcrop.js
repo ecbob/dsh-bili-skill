@@ -1,5 +1,5 @@
 /**
- * jpgcrop.js —— bili-skill 自带的纯 JS baseline JPEG 解码/裁切/重编码（零运行时依赖，不用 ffmpeg / sharp）。
+ * jpgcrop.js —— dsh-bili-skill 自带的纯 JS baseline JPEG 解码/裁切/重编码（零运行时依赖，不用 ffmpeg / sharp）。
  *
  * 为什么需要它：B站 的 x/player/videoshot 经常把整条视频拼成**一张**缩略矩阵（本机实测：
  * img_x_len:10 / img_y_len:10 / img_x_size:480 / img_y_size:270 / image:[一张 4800x2700 的 .jpg]），
