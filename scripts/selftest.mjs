@@ -31,6 +31,17 @@ const mkCtx = () => {
   return { ctx, tools, providers, effects, ctrlBox }
 }
 
+/* ── 假 ctx 的第二种装法：给一个 webServer，把插件注册的 prefix 路由抓下来，离线也能直接打它 ── */
+const mkCtxWithServer = () => {
+  const base = mkCtx()
+  const routes = []
+  base.ctx.inject = (names, cb) => cb({
+    get: (k) => (k === 'webServer' ? { register: (r) => { routes.push(r); return () => {} } } : undefined),
+    effect: (fn, l) => { base.effects.push([fn, l]); return () => {} },
+  })
+  return { ...base, routes }
+}
+
 /* ── 假 fetch：记录每一次调用的形状，好核对 Gaia 三步顺序 ── */
 const hits = []
 const SPI_B3 = 'AAAAAAAA-BBBB-CCCC-DDDD-EEEEEEEEEEEE12345infoc'
@@ -153,7 +164,7 @@ ok('effect 挂上了 skill provider 的 disposer', a.effects.some(([, l]) => Str
   const win = await probePollShape({ code: 0, data: { code: 0, url: "https://passport.biligame.com/x/passport-login/web/crossDomain?ticket=x", refresh_token: "rt", timestamp: 1 } }, ["SESSDATA=abc; Path=/; Domain=bilibili.com", "bili_jct=def; Path=/", "DedeUserID=42; Path=/"])
   ok("成功那一路判成 ok 且读的是 SESSDATA 这个大小写（我先前读小写 sessdata，把真成功误报成\"扫码了但没 sessdata\"）", win.state === "ok" && win.sessdata === "abc" && win.dedeuserid === "42", JSON.stringify(win))
 }
-/* ── 1c. qrpng：功能区格数/容量/格式位落格（外部解码器的活体在 .dsh\.tmp-src\qr-check.mjs，这里只做不依赖它的确定性断言）── */
+/* ── 1c. qrpng：功能区格数/容量/格式位落格（拿真图对拍的活体探针在本机、不在包里；这里只做不依赖它的确定性断言）── */
 {
   const QR = await import(pathToFileURL(path.join(pkgDir, 'qrpng.js')).href)
   const EXPECT = { 2: { cw: 44, bytes: 32 }, 3: { cw: 70, bytes: 53 }, 4: { cw: 100, bytes: 78 }, 5: { cw: 134, bytes: 106 } }
@@ -578,7 +589,14 @@ async function riskCase(homeName, plan, extraCfg) {
     const fh = await import(pathToFileURL(path.join(pkgDir, 'ffmpeghd.js')).href)
     ok('ffmpeghd：没 ffmpeg 时如实回 no-ffmpeg（不许静默当高清成功）', (await fh.hdFrame({ call: async () => ({ ok: true, code: 0, message: 'OK', data: {} }), log: () => {}, framesDir: tmp, UA: 'u', REFERER: 'r', ffmpeg: null }, { bvid: 'BV1x', cid: 1, sec: 1 }))?.why === 'no-ffmpeg')
     ok('ffmpeghd：挑轨优先高分辨率的 H.264（avc1 赢过 AV1/低分辨率）', fh.pickStream([{ width: 1280, height: 720, codecs: 'avc1.640033', baseUrl: 'a' }, { width: 1920, height: 1080, codecs: 'av01.0', baseUrl: 'b' }, { width: 640, height: 360, codecs: 'avc1.640033', baseUrl: 'c' }])[0].baseUrl === 'a', JSON.stringify(fh.pickStream([{ width: 1280, height: 720, codecs: 'avc1.640033', baseUrl: 'a' }, { width: 1920, height: 1080, codecs: 'av01.0', baseUrl: 'b' }])[0]))
-    ok('ffmpeghd：findFfmpeg 能找到本机补上的那颗 ffmpeg', typeof fh.findFfmpeg({ ffmpegPath: 'D:/DSH_WorkSpace/.dsh/.build-tools/ffmpeg/ffmpeg.exe' }) === 'string', String(fh.findFfmpeg({ ffmpegPath: 'D:/DSH_WorkSpace/.dsh/.build-tools/ffmpeg/ffmpeg.exe' })))
+    {
+      // 便携口径：自己造一颗"确实存在的 exe"喂给 findFfmpeg，断言里不再钉死任何人的绝对路径
+      const stub = path.join(tmp, 'ff-stub', 'ffmpeg.exe')
+      fs.mkdirSync(path.dirname(stub), { recursive: true })
+      fs.writeFileSync(stub, 'MZ\x00', 'utf8')
+      ok('findFfmpeg：config.ffmpegPath 指的那颗真存在就直接用它（返回值就是那条路径）', fh.findFfmpeg({ ffmpegPath: stub }) === stub, String(fh.findFfmpeg({ ffmpegPath: stub })))
+      ok('findFfmpeg：ffmpegPath 指的东西不存在时不会把它当找到了（不返回那条不存在的路）', fh.findFfmpeg({ ffmpegPath: path.join(tmp, 'definitely-no-ffmpeg.exe') }) !== path.join(tmp, 'definitely-no-ffmpeg.exe'), String(fh.findFfmpeg({ ffmpegPath: path.join(tmp, 'definitely-no-ffmpeg.exe') })))
+    }
     {
       // 机器上没有 ffmpeg 时，要高清也不能静默降级（本机真栽过：静默回了格子帧，我还当成高清验过了）
       // ⚠️ findFfmpeg 还会拿 process.cwd() 兜底找 .dsh/.build-tools/ffmpeg/ffmpeg.exe（本机实测的摆法）：
@@ -613,6 +631,28 @@ async function riskCase(homeName, plan, extraCfg) {
     ok('返回值里回带记账结果（不能悄悄不记账）', !!kr.ledger && (kr.ledger.added === 1 || kr.ledger.ok === true), JSON.stringify(kr.ledger || { no_field: true, kr_ok: kr.ok, kr_msg: String(kr.message || '').slice(0, 120) }))
   }
   }
+}
+
+/* ── 18. 状态快照与状态口（0.8.2：判据不许只挂在 HTTP 与宿主鉴权上）── */
+{
+  const sHome = path.join(tmp, 'status-home')
+  const sc = mkCtxWithServer(); mod.apply(sc.ctx, { home: sHome, logLevel: 'silent' })
+  const snapFile = path.join(sHome, 'status.json')
+  ok('挂载即落一份 status.json（不碰 HTTP、不靠宿主鉴权也能看现场）', fs.existsSync(snapFile), '家目录里没有 ' + snapFile)
+  const snap0 = JSON.parse(fs.readFileSync(snapFile, 'utf8'))
+  ok('快照字段齐：plugin / version 现读包 / home / loggedIn / skills 7 份 / ledger 摘要 / config / at', snap0.plugin === 'dsh-bili-skill' && snap0.version === pv && snap0.home === sHome && typeof snap0.loggedIn === 'boolean' && snap0.skills.length === 7 && snap0.skills.every((s) => s.name && s.from && s.source) && typeof snap0.ledger === 'string' && !!snap0.config && typeof snap0.config.requestTimeoutMs === 'number' && !!snap0.at && snap0.statusFile === snapFile, JSON.stringify(Object.keys(snap0)))
+  const route = sc.routes.find((r) => r.path === '/api/dsh-bili-skill')
+  ok('注册的路由是 kind:prefix、前缀就是 /api/dsh-bili-skill（跟着插件名走）', !!route && route.kind === 'prefix', JSON.stringify(sc.routes.map((r) => [r.kind, r.path])))
+  const fakeRes = () => { const box = { code: 0, headers: {}, body: '' }; const r = { writeHead(code, headers) { box.code = code; Object.assign(box.headers, headers || {}); return r }, end(body) { box.body = body == null ? '' : String(body); return box } }; return { r, box } }
+  const g1 = fakeRes(); await route.handler({ method: 'GET', url: '/api/dsh-bili-skill/status' }, g1.r)
+  const j1 = JSON.parse(g1.box.body)
+  ok('GET /api/dsh-bili-skill/status 回 200 JSON + no-store，内容与快照同源', g1.box.code === 200 && /application\/json/.test(String(g1.box.headers['content-type'])) && g1.box.headers['cache-control'] === 'no-store' && j1.ok === true && j1.skills.length === 7 && j1.home === sHome, JSON.stringify({ code: g1.box.code, headers: g1.box.headers }))
+  const g2 = fakeRes(); await route.handler({ method: 'GET', url: '/api/dsh-bili-skill/nope-deep' }, g2.r)
+  ok('前缀下不认的路劲回自己那份 404 JSON（error:"no-route"），好跟宿主的 "not found" 分开', g2.box.code === 404 && JSON.parse(g2.box.body).error === 'no-route', g2.box.code + ' ' + g2.box.body.slice(0, 60))
+  fs.rmSync(snapFile)
+  const g3 = fakeRes(); await route.handler({ method: 'GET', url: '/api/dsh-bili-skill/' }, g3.r)
+  const snap1 = JSON.parse(fs.readFileSync(snapFile, 'utf8'))
+  ok('状态口每问一次就重刷快照（删掉后能再生成）；根路径 /api/dsh-bili-skill/ 也算状态口', fs.existsSync(snapFile) && g3.box.code === 200 && Date.parse(snap1.at) >= Date.parse(snap0.at), JSON.stringify({ at0: snap0.at, at1: snap1.at, code: g3.box.code }))
 }
 
 try { fs.rmSync(tmp, { recursive: true, force: true }) } catch { /* 收尾删不掉就算了 */ }

@@ -1,7 +1,7 @@
 {
   "name": "dsh-bili-skill",
-  "version": "0.8.1",
-  "description": "B站 能力底座插件（纯 JS、零运行时依赖）：登录与凭证、昵称↔UID、一条带 Cookie/CSRF/WBI 签名的通用 API 通道、取画面帧、JSONL 记账；六项能力（搜索筛选 / 看画面 / 评论 / 读私信 / 写私信 / 记账）以 SKILL.md 形式按需加载，常驻工具声明只有 5 只。原名 bili-skill（更早叫 dsh-bili-base），与 c1overzz/dsh-bili-scroll 并存，不抢它的值班轮与家目录。",
+  "version": "0.8.2",
+  "description": "B站 能力底座插件（纯 JS、零运行时依赖，只用 node 内置 + 全局 fetch）：扫码登录与凭证、昵称↔UID、一条自动带 Cookie/CSRF/WBI 签名的通用 API 通道、故事板取帧并从拼图里裁成单帧（可选外部 ffmpeg 解高清）、JSONL 记账并按 key 去重；七份 SKILL.md 按需加载说明怎么用它（搜索筛选 / 看画面 / 评论 / 回评论 / 读私信 / 写私信 / 记账），常驻工具声明只有 5 只（bili_auth / bili_api / bili_shot / bili_frames / bili_ledger）。没有定时器、没有值班轮、没有日报，也不会自己决定发评论或发私信。原名 bili-skill（更早叫 dsh-bili-base）。",
   "type": "module",
   "main": "./index.js",
   "exports": {

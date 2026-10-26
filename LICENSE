@@ -20,5 +20,6 @@ LIABILITY, WHETHER IN AN ACTION OF CONTRACT, TORT OR OTHERWISE, ARISING FROM,
 OUT OF OR IN CONNECTION WITH THE SOFTWARE OR THE USE OR OTHER DEALINGS IN THE
 SOFTWARE.
 
-本插件对 B站 接口的使用口径与端点清单参考了 c1overzz/dsh-bili-scroll 与
-bilibili-api-python（MIT）的既有实现；登录与凭证字段名与 dsh-bili-scroll 保持一致。
+本插件对 B站 接口的使用口径与端点清单参考了 bilibili-api-python（MIT）的既有实现；
+二维码出图的回落实现是 vendored 的 qrcode-generator v1.4.4（MIT, Kazuhiko Arase），
+其版权声明与 MIT 条款随文件头一起保留在 vendor/qrcode-generator-1.4.4.cjs。

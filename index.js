@@ -1,25 +1,30 @@
 /**
  * dsh-bili-skill —— B站 能力的「底座」插件（纯 JS、零运行时依赖）
  *
- * 设计（2026-10-25，与 c1overzz/dsh-bili-scroll 并存、互不抢地盘）：
- *   base 只管四件事：① 登录与凭证 ② 身份（昵称 ↔ UID）③ 一条带 Cookie/CSRF/WBI 签名的通用 API 通道
- *   ④ 记账。能力面（搜索筛选 / 看画面理解 / 评论 / 读私信 / 写私信 / 记账）是**六份 SKILL.md**，
- *   按需加载 —— 常驻的工具声明只有 5 只，这正合本地模型「少声明、按需取说明书」的取向。
- *   没有值班轮、没有定时器、没有日报、没有专用 profile，也不碰 bili-scroll 的家目录。
+ * 设计（2026-10-25）：base 只管四件事 —— ① 登录与凭证 ② 身份（昵称 ↔ UID）③ 一条带 Cookie/CSRF/WBI
+ *   签名的通用 API 通道 ④ 取画面帧 + JSONL 记账。能力面（搜索筛选 / 看画面理解 / 评论 / 回评论 /
+ *   读私信 / 写私信 / 记账）是**七份 SKILL.md**，按需加载 —— 常驻的工具声明只有 5 只，
+ *   这正合本地模型「少声明、按需取说明书」的取向。没有值班轮、没有定时器、没有日报、没有专用 profile，
+ *   也不碰别人的家目录；评论与私信都是拿使用者的号说话，本插件不自己决定发不发。
  *
  * 家目录（全在这一个目录里，删掉即彻底回滚）：
  *   $DSH_HOME/dsh-bili-skill/
- *     config.json              运行时配置（设置页/工具改，优先于 patch config）
- *     bili_credential.json     sessdata / bili_jct / buvid3 / dedeuserid（字段名与 bili-scroll 一致，可直接互抄）
+ *     config.json              运行时配置（用的时候现读，优先于 patch config）
+ *     bili_credential.json     sessdata / bili_jct / buvid3 / dedeuserid（四个 cookie 字段，与 bilibili-api-python 的 Credential 同形，可互抄）
+ *     credential-source.json   凭证是哪来的（scan 自己扫的 / import 从别处抄的）
  *     uid-cache.json           昵称 → UID（带时间戳，TTL 7 天）
+ *     gaia-state.json          现取指纹上报后的 buvid3/buvid4（撞风控自愈时才会写）
  *     ledger/<表名>.jsonl      记账（append-only，可按 key 去重）
- frames/<bvid>-…          取到的画面帧（临时物，framesClear 默认删这些）
- frames/keep/<bvid>-…       值得长期留下的**单独一帧**（framesClear 默认不碰；配合 ledger 的 frame 表记住为什么留）
- *     base.log                 本插件自己的日志（含"这次调用签了 wbi / 用了哪份凭证"）
+ *     frames/<bvid>-…          取到的画面帧（临时物，bili_frames clear 默认删这些）
+ *     frames/keep/<bvid>-…     值得长期留下的**单独一帧**（clear 默认不碰；配合 ledger/frame 记住为什么留）
+ *     skills/<name>.md         使用者写的覆盖版说明书（同名即顶掉包内那份）
+ *     tmp-qr/                  扫码登录的二维码图（每次 start 只留最新一张）
+ *     status.json              状态快照（挂载即写一份、状态口每问即刷一份）
+ *     base.log                 本插件自己的日志（含"这次调用签了 wbi / 用了哪份凭证 / 搬了家"）
  *
  * 拓展点（按便宜程度排序）：
  *   1) 改 `skills/<name>.md` —— 判入口径、端点清单、红线，全是 markdown
- *   2) 在 `dsh-bili-skill/skills/<name>.md` 放同名文件 —— 覆盖包内那份，升级不被冲（provider 每次现读磁盘）
+ *   2) 在家目录放 `skills/<name>.md` 顶掉包内那份 —— 升级不被冲（provider 每次现读磁盘）
  *   3) 在 `SKILL_NAMES` 里加一个名字 + 一个 md 文件 —— 多一个能力，不加工具
  *   4) 在 `TOOLS` 之下加一只 `ctx.tools.register(...)` —— 需要新原子操作时才动
  *
@@ -73,7 +78,7 @@ export function __renderWithImages(value) {
   for (const ref of refs) parts.push({ type: 'image', attachment: ref })
   return parts
 }
-/** 把帧存成宿主的图片附件；宿主没给服务或模型不接图片时退化成文字（这条契约照 dsh-bili-scroll 抄，MIT 同源）。 */
+/** 把帧存成宿主的图片附件；宿主没给服务或模型不接图片时退化成文字（这条契约是宿主实测出来的形状）。 */
 export async function __attachImages(get, exec, images) {
   const grab = (k) => { try { return get?.(k) } catch { return null } }
   const attachments = grab('attachments')
@@ -105,7 +110,7 @@ const GAIA_REFERER = 'https://www.bilibili.com'
  * ⚠️ B站 真正认的是**首字母大写**的名字（SESSDATA / DedeUserID）；小写那两份是各家库自己存的别名。
  * bilibili-api-python 的做法是**两种拼写一起发**（Credential.get_cookies() 实测就是这样）—— 只发小写时
  * nav 会一路回 code=-101「账号未登录」，连带让 wbi 端点把我判成匿名会话、只回 v_voucher
- * （本机 2026-10-26 撞实过，对照实验：同一份凭证，隔壁 dsh-bili-scroll 说已登录）。
+ * （本机 2026-10-26 撞实过，对照实验：同一份凭证在另一路已装实现里被判「已登录」，在我这儿 nav 一路回 -101）。
  */
 export function __cookieHeader(c) {
   const parts = []
@@ -220,7 +225,7 @@ const DEFAULTS = {
   autoImportCredential: true, uidTtlDays: 7, logLevel: 'info', watchSkills: false, gaia: false, ffmpegPath: '',                       // 空 = 自动找（DSH_BILI_FFMPEG → PATH → 家目录旁 .dsh/.build-tools/ffmpeg/ffmpeg.exe）
 }
 
-/** patch config + 家里 config.json 的合并（家里优先；空值不覆盖 —— 与 bili-scroll 同一口径） */
+/** patch config + 家里 config.json 的合并（家里优先；空值不覆盖） */
 function loadCfg(raw) {
   const out = { ...DEFAULTS }
   const src = raw && typeof raw === 'object' && !Array.isArray(raw) ? raw : {}
@@ -941,16 +946,29 @@ export function apply(ctx, config = {}) {
     if (typeof offSkills === 'function') offSkills()
   }, 'dsh-bili-skill: skills provider')
 
-  // ───────────────────────── 状态口（给排错/以后做 UI 用） ─────────────────────────
-  const statusBody = () => ({ ok: true, plugin: 'dsh-bili-skill', version: liveVersion(), home, loggedIn: !!readCred()?.sessdata, credentialFile: credFile, ledgerDir, framesDir: framesDir, logFile, skills: buildCandidates().map((c) => ({ name: c.name, from: c.from, source: c.source })), ledger: ledgerIndex(), config: cfg })
+  // ───────────────────────── 状态口 + 状态快照 ─────────────────────────
+  // 两条看现场的路，别混：宿主的 webServer 外面套了一层浏览器会话鉴权（dsh-client-connection），
+  // query token 只在 GET / 与 GET /connect 两处认，其余路径（包括这条 /api/...）只认那份 dsh-auth-* cookie
+  // ⇒ 命令行不带 cookie 打它是 401，那**不是**"路由没挂上"（本机 2026-10-26 实测：签一份 cookie 就回 200）。
+  // 所以状态同时落一份家目录快照：判据不依赖 HTTP、不依赖鉴权，重启没挂载也有 base.log 之外的抓手。
+  const statusFile = path.join(home, 'status.json')
+  const statusBody = () => ({ ok: true, plugin: 'dsh-bili-skill', version: liveVersion(), home, loggedIn: !!readCred()?.sessdata, credentialFile: credFile, ledgerDir, framesDir: framesDir, logFile, statusFile, skills: buildCandidates().map((c) => ({ name: c.name, from: c.from, source: c.source })), ledger: ledgerIndex(), config: cfg })
+  /** 把状态写成家目录的 status.json（原子：先 .tmp 再换名）；写不上也不许拦住状态口 */
+  const writeStatusSnapshot = () => {
+    const body = { ...statusBody(), at: new Date().toISOString() }
+    try { fs.writeFileSync(statusFile + '.tmp', JSON.stringify(body, null, 2) + '\n', 'utf8'); fs.renameSync(statusFile + '.tmp', statusFile) }
+    catch (e) { log('⚠️ status.json 没写上（' + String(e?.code || e?.message || e).slice(0, 120) + '）；状态口本身不受影响') }
+    return body
+  }
+  writeStatusSnapshot()   // 挂载即落一份，不等人来问
   ctx.inject(['webServer'], (w) => {
     const server = w.get('webServer')
-    if (!server?.register) { log('⚠️ 没有 webServer，状态口没挂上（工具与 skill 不受影响）'); return }
+    if (!server?.register) { log('⚠️ 没有 webServer，状态口没挂上（工具、skill 与 status.json 快照都不受影响）'); return }
     const off = server.register({
       kind: 'prefix', path: '/api/dsh-bili-skill',
       handler: (req, res) => {
         const p = String(req.url || '').split('?')[0]
-        if (req.method === 'GET' && (p === '/api/dsh-bili-skill/status' || p === '/api/dsh-bili-skill/')) { res.writeHead(200, { 'content-type': 'application/json; charset=utf-8', 'cache-control': 'no-store' }).end(JSON.stringify(statusBody())); return }
+        if (req.method === 'GET' && (p === '/api/dsh-bili-skill/status' || p === '/api/dsh-bili-skill/')) { res.writeHead(200, { 'content-type': 'application/json; charset=utf-8', 'cache-control': 'no-store' }).end(JSON.stringify(writeStatusSnapshot())); return }
         res.writeHead(404, { 'content-type': 'application/json; charset=utf-8', 'cache-control': 'no-store' }).end('{"ok":false,"error":"no-route"}')
       },
     })

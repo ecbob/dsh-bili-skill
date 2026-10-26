@@ -1,6 +1,6 @@
 # dsh-bili-skill
 
-B站 能力的**底座**插件：纯 JS、零运行时依赖（只用 node 内置 + 全局 fetch）。与 `c1overzz/dsh-bili-scroll` **并存** —— 它管"每天替你刷一轮 + 日报 + 定时器"，本插件只管**原子能力**，不抢它的值班轮、家目录与配置。
+B站 能力的**底座**插件：纯 JS、零运行时依赖（只用 node 内置 + 全局 fetch）。只管**原子能力** —— 扫码登录与凭证、昵称↔UID、一条自动带 Cookie/CSRF/WBI 签名的通用 API 通道、故事板取帧并从拼图里裁成单独一帧、JSONL 记账。没有定时器、没有值班轮、没有日报，也不会自己决定发不发评论或私信（那是拿使用者的号说话）。
 
 > 名字沿革：`dsh-bili-base`（≤0.6.6）→ `bili-skill`（0.7.x）→ **`dsh-bili-skill`**（0.8.0）。改的只是包名 / 插件 id / 家目录默认段 / 状态口前缀；5 只工具名 `bili_*` 与 7 份说明书名 `bili-*` 一直没动。旧家目录在首次启动时自动搬（见「家目录」）。
 
@@ -25,15 +25,18 @@ base（5 只常驻工具）
 
 | 文件 | 内容 |
 |---|---|
-| `bili_credential.json` | `sessdata` / `bili_jct` / `buvid3` / `dedeuserid`（字段名与 dsh-bili-scroll 一致，可互抄） |
+| `bili_credential.json` | `sessdata` / `bili_jct` / `buvid3` / `dedeuserid`（四个 cookie 字段，与 bilibili-api-python 的 `Credential` 同形，可互抄） |
 | `config.json` | 运行时配置（优先于 patch config，且用的时候现读） |
+| `credential-source.json` | 凭证是哪来的：`scan`（自己扫的码）/ `import`（从别处抄的） |
 | `uid-cache.json` | 昵称 → UID，带时间戳，TTL 默认 7 天 |
+| `gaia-state.json` | 现取指纹上报后的 `buvid3/buvid4`（默认不报，撞风控自愈时才写） |
 | `ledger/<表名>.jsonl` | 记账。建议表名：`seen` / `comment` / `dm` / `note` / `frame` |
 | `frames/<bvid>-…jpg` | 临时取帧（`bili_frames {action:"clear"}` 默认删这些） |
 | `frames/keep/<bvid>-…jpg` | **裁成单独一帧、决定长期留下的**（配合 `ledger/frame` 记为什么留） |
 | `skills/<name>.md` | **你写的覆盖版说明书**：放同名文件就优先用它，插件升级不冲（provider 每次现读磁盘） |
 | `tmp-qr/` | 扫码登录的二维码图，每次 `start` 只留最新一张 |
-| `base.log` | 本插件日志（写明每次是否签了 wbi、用的哪份凭证） |
+| `status.json` | **状态快照**：挂载即写一份、每次打状态口再刷一份（版本/登录与否/家目录/账本行数/skill 来源/配置/`at`） |
+| `base.log` | 本插件日志（写明每次是否签了 wbi、用的哪份凭证、有没有搬家） |
 
 **改名字带的搬家**：插件改名后家目录默认段也跟着改，首次启动按「由近到远」（`bili-skill` → `bili-base`）把还活着的旧名目录**补进**新家（已有的不覆盖、标记文件不搬），再把旧目录改名成 `<旧名>.migrated-<UTC>` 留档；改名不成（目录被别的进程攥着）就把内容逐项挪进归档、旧壳只留标记。旧壳里的 `.migrated-to-*` 标记认任何去向，搬过的壳永不重搬，绝不静默丢数据。搬家在 `apply()` 入口就做，不等挂载（本机栽过：新实例迟迟不挂载，期间直接用工具写账就已经分家）。把 `config.home` 手动钉在旧名目录上 = 使用者的选择，不搬。
 
@@ -56,7 +59,7 @@ dsh plugin --profile <profile> add "<这个 tgz 的绝对路径>"   # 或 add ds
 
 ### 动 profile 的 `cordis.patch.yml` 之前（本机踩过的坑，收口成三条）
 
-- 那份文件是**整个 profile 共享的层**（UI 设置、`provider: strata`、agent preset 组合、compaction 比例、各插件的 config 覆盖都在同一份里）：**别整份覆盖**，要加就在**末尾**追加一整条 `- id: dsh-bili-skill` 的覆盖；先备份，写完用 `.dsh\.build-tools\patch-guard.mjs doctor` 核关键段。
+- 那份文件是**整个 profile 共享的层**（UI 设置、默认模型的 provider、agent preset 组合、compaction 比例、各插件的 config 覆盖都在同一份里）：**别整份覆盖**（本机整份覆盖过一次，顶段被吞，运行直接报 `no adapter registered for provider "…"`）；要加就在**末尾**追加一整条 `- id: dsh-bili-skill` 的覆盖。先备份，写完逐段核一遍关键段还在不在（provider / preset / compaction / 各插件行）。
 - **插件 id 改名后旧 id 的覆盖行不吃**：profile 里写着的 `- id: bili-skill` / `- id: dsh-bili-base` 要改成新 id，否则你的 config 覆盖静默失效。
 - **删旧 tgz 前先把两边对齐**：`pnpm` 会拿着旧 `package.json`/`pnpm-lock.yaml` 去找已消失的 tarball ⇒ `ENOENT ... <包名>-<版本>.tgz`、插件装不进去（`node_modules\<包名>` 直接没了）。同名同版本的 `file:` 依赖即使 `pnpm install --force` 也不重新解包，要先删 `node_modules\<包名>`。命令输出**别过筛选**（失败行会被吞）：`Out-String` 全量落地再读。
 
@@ -66,12 +69,14 @@ dsh plugin --profile <profile> add "<这个 tgz 的绝对路径>"   # 或 add ds
 2. 在家目录放 `skills/<name>.md` 覆盖包内那份（升级不冲）
 3. 加能力：`SKILL_NAMES` 里加名字 + 写一份 md，**不用加新工具**
 4. 加原子操作：`index.js` 里再 `ctx.tools.register(...)`
-5. 状态口：`GET /api/dsh-bili-skill/status`（版本/登录状态/家目录/skill 来源/生效配置）—— 以后要给它做设置页就用这条路
+5. 看现场两条路（**别混，也别只认一条**）：
+   - `GET /api/dsh-bili-skill/status` —— 版本/登录状态/家目录/skill 来源/账本行数/生效配置，`no-store`。⚠️ 它挂在**宿主的浏览器会话鉴权**后面：宿主那层（`dsh-client-connection`）只在 `GET /` 与 `GET /connect` 认 query token 并下发 `dsh-auth-<base64url(sha256(authority))>` 这份 HttpOnly cookie，其余路径一律只认 cookie ⇒ **命令行/curl 不带那份 cookie 就是 401，那不代表"路由没挂上"**（本机 2026-10-26 实测：浏览器同源直接开 = 200；自己照宿主的口径签一份 cookie 去打也 = 200，而旧前缀 `/api/bili-skill/status` 回宿主的 `404 not found`）。给它做设置页走的就是这条路（浏览器里 cookie 已经种好了）。
+   - 家目录的 **`status.json`** —— 同一份内容 + `at` 时间戳，**挂载即写、每问即刷**（刷的是同一段代码）。判"挂没挂、装的是哪版、账本还剩几行"不必碰 HTTP 与鉴权，这就是 0.8.2 加它的理由（隔壁插件撞同一堵墙后也是这么收口的）。
 
 ## 二维码（bili_auth start）
 
 - 出图引擎：**自研 `qrpng.js` 优先**，它不成才回落 `qrvendor.js`（vendored `qrcode-generator 1.4.4`，MIT，覆盖 v1..v40）；回包里 `qr_png.engine` 会写明用的哪个、有没有 `fellback_from`。
-- 自研覆盖：**v2..v10 × L/M/Q/H 四档**、byte 模式；正确性由**外部解码器 jsQR** 逐字验（活体 `.dsh\.tmp-src\qr-check.mjs` + 插件自检）。做到 v10 是因为真登录链接有余量需求（v6/L 只装 134 字节，实测链接 145 字节）。
+- 自研覆盖：**v2..v10 × L/M/Q/H 四档**、byte 模式；正确性由**外部解码器 jsQR** 逐字验（离线断言在插件自检里；本机另备一份"拿真图对拍"的活体探针，属于工作区脚手架，不在包里）。做到 v10 是因为真登录链接有余量需求（v6/L 只装 134 字节，实测链接 145 字节）。
 - 没做的：数字/混合模式编码、v11 及以上。超出范围不会瞎画 —— 回 `too_long` 并交给回落链。
 - 图落在家目录 `tmp-qr/`（不放 `frames/`：那里是画面帧的管家目录，有 keep/clear 那套管），每次 `start` 只留最新一张。
 
