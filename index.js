@@ -29,6 +29,7 @@
  *   4) 在 `TOOLS` 之下加一只 `ctx.tools.register(...)` —— 需要新原子操作时才动
  *
  * 只 import node: 内置（fs/path/os/crypto/url）+ 全局 fetch。不引 @deepseek-ai/*、不引 undici。
+ * 「哪些代码是照谁写的、对照裁判是谁」写在 README 的「参考来源」一节，不在这里重复。
  */
 import fs from 'node:fs'
 import path from 'node:path'

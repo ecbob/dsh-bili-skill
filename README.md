@@ -80,6 +80,26 @@ dsh plugin --profile <profile> add "<这个 tgz 的绝对路径>"   # 或 add ds
 - 没做的：数字/混合模式编码、v11 及以上。超出范围不会瞎画 —— 回 `too_long` 并交给回落链。
 - 图落在家目录 `tmp-qr/`（不放 `frames/`：那里是画面帧的管家目录，有 keep/clear 那套管），每次 `start` 只留最新一张。
 
+## 参考来源（哪些代码不是我自己想出来的）
+
+行号一律按**参考时那一份**记，上游挪了就挪了，别拿去当定位器。
+
+| 这块 | 抄谁 / 靠什么定下来 | 落在哪 |
+|---|---|---|
+| WBI 签名：重排表 `OE`、`wts` + `w_rid` 的拼法、`web_location=1550101` | `bilibili-api-python`（MIT）`utils/network.py` 的 `get_wbi_img` / `enc_wbi` 一路（重排表在参考时那份的 :1509） | `index.js` 的 `MIXIN_TAB`、`signWbi()` |
+| `buvid_fp`：murmur3_x64_128(seed=31) → `hex(h1)+hex(h2)`（Python 的 `hex()` 不补零 ⇒ 这边也不补） | 同上（参考时 :1621-1700）；正确性由参考实现 dump 出的向量逐位比对 | `index.js` 的 `__murmur3x64128Hex()` + `gaia/_fp-vector.txt` |
+| `_uuid` 的 `…infoc` 形状、Gaia 三步（spi → `ExClimbWuzhi` → 之后改用现取的 buvid）、指纹 payload 模板 | 同上（`gen_uuid_infoc` 参考时 :1607；UA/HEADERS 口径在 :1577 一带） | `index.js` 的 `__genUuidInfoc()`、`__gaiaBody()`、`ensureGaia()`、`gaia/payload-template.txt` |
+| 凭证四字段 `sessdata / bili_jct / buvid3 / dedeuserid` 与「首字母大小写两种拼写一起发」 | 同上库的 `Credential.get_cookies()`；`只发小写会一路 -101 未登录` 这条是拿它做对照实验撞出来的 | `index.js` 的 `__cookieHeader()`、`loginPoll()` |
+| 各能力的**端点、参数形状、错误码**（故事板 `x/player/videoshot`、扫码 `passport-login/web/qrcode/*`、`reply/add` 的四个 `dm_*` 反爬参数、`web_im/send_msg`、`svr_sync/fetch_session_msgs`、`session_svr/session_detail`…） | 直接读 B站 自家前端与 App 的请求行为（本机逐条实测），再用上面那份库交叉印证；「这条不通换哪条」写在各份 SKILL.md 里 | 七份 `skills/*.md` |
+| 帧作为**图片附件**回会话的契约（先进宿主 attachments、模型不接图就退化成路径+hint） | DSH 宿主的实测返回形状（`ctx.get('attachments')` / `llm.resolveModelInfo` 的 `inputModalities`） | `index.js` 的 `__attachImages()`、`__renderWithImages()` |
+| baseline JPEG 的解码 / 裁切 / 重编码（Annex K 标准码表、ZigZag、IDCT、色度上采样） | ITU-T T.81 (JPEG) 规范的 **Annex K 标准表**；对错不自己说，由三张 Windows `System.Drawing`（独立编码器）写的基准图当外部裁判 | `jpgcrop.js`、`fixtures/ref-*.jpg` |
+| 二维码：分块表、码字数几何、格式位 BCH(15,5) 与版本位 BCH(18,6)、掩码罚分 | 依据 ISO/IEC 18004 的表；对照数据来自 **vendored 的 `qrcode-generator` v1.4.4（MIT, Kazuhiko Arase）** 的 `RS_BLOCK_TABLE` 与矩阵（它自己**不写格式信息**，所以 v6 那种分歧不拿它当真理，改由"我这边自洽 + 外部解码器解回"定） | `qrpng.js`、`qrvendor.js`、`vendor/qrcode-generator-1.4.4.cjs` |
+| 二维码与 JPEG 的**裁判**（不在包里） | `jsQR`（MIT, cozmo）作外部解码器逐字 roundtrip；`System.Drawing` 作独立编码器基准 | 本机活体探针 + `scripts/selftest.mjs` 第 [1c]/[17] 组 |
+| 同类插件的口径互抄 | `c1overzz/dsh-bili-scroll`（MIT，DSH 上另一路 B站 插件）：凭证字段名同源、图片附件契约、以及「家里优先、空值不覆盖」的配置合并口径，都是拿它做对照实验定下来的；**本插件不调用它、不共它的家目录、也不抢它的值班轮** | 「家目录」「工具」两节与上面的对照实验记录 |
+| 宿主侧形状：bundle 的 `dsh.bundle.patch`、`ctx.tools` / `ctx.skills.registerProvider` / `webServer` 前缀路由、以及状态口为什么命令行打不通 | DSH 本体（`@deepseek-ai/dsh-*`）与本机 asar 实读；401 那条出自宿主的 `dsh-client-connection`（只有 `GET /` 与 `GET /connect` 认 query token，其余只认 `dsh-auth-*` cookie） | `cordis.patch.yml` + 上面「看现场两条路」那条 |
+
+两条合规说明：① `LICENSE` 已写明 `bilibili-api-python` 与 vendored `qrcode-generator` 的 MIT 归属，vendored 那份文件头自带原版权声明，我没有改动它的许可文本；② `jsQR` 与 `System.Drawing` 只当**对照裁判**，没有任何一行代码来自它们，所以不进包、也不进归属清单。
+
 ## 已知边界
 
 - WBI 签名的 query 编码规则各家实现略有差异；`bili_api` 的 `sign` 只负责**加上**签名，端点到底吃不吃由返回值说话（`code=-412/-403` 时 mixin key 会自动作废重取）。每份 skill 里都写了"这个端点不通就换哪个"。
