@@ -251,8 +251,8 @@ function coerce(k, v) {
   if (k === 'uidTtlDays') return Math.max(1, Math.min(90, Math.round(n)))
   return n
 }
-// 改名迁移：插件改过两次名（bili-base → bili-skill → dsh-bili-skill），家目录默认值跟着包名走 ⇒
-// 首次启动按「由近到远」把还活着的旧名目录补进新家（不覆盖已有），再把旧目录改名成 <旧名>.migrated-<UTC> 留档，绝不静默丢数据。
+// 家目录搬家：默认段名跟着包名走 ⇒ 首次启动按「由近到远」把还活着的旧名目录补进新家（已有的不覆盖、
+// 标记文件不进新家），再把旧目录改名成 <旧名>.migrated-<UTC> 留档，绝不静默丢数据。
 const LEGACY_HOME_NAMES = ['bili-skill', 'bili-base']   // 由近到远；新家 = 当前插件名（dirOf 的默认段）
 const MARK_PREFIX = '.migrated-to-'                     // 旧壳里的「已搬走」标记（名字带去向）；见着任何一条就永不重搬这个壳
 const OLD_DIR_RENAMED = (oldName, stamp) => oldName + '.migrated-' + stamp

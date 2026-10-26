@@ -2,8 +2,7 @@
 # 注册 Cordis 插件行 `dsh-bili-skill`：B站 能力底座（登录/凭证、昵称↔UID、通用 API 通道、取帧、记账）
 # + 七份按需加载的 SKILL.md。默认值已编进插件，这里写空对象即可。
 #
-# 名字换过两次：dsh-bili-base → bili-skill → dsh-bili-skill（0.8.0）。profile 层要是还写着旧 id
-# （`- id: bili-skill` 或 `- id: dsh-bili-base`），那行覆盖不吃 —— 改成新 id 才算数。
+# profile 层要是还写着别的 id（例如 `- id: bili-skill`），那行覆盖不吃 —— 必须照下面的 id 写才算数。
 #
 # 想改就在 profile 自己的 cordis.patch.yml 里按同一 id 覆盖（profile 层后于 bundle 层，覆盖是整份换 config）：
 #   - id: dsh-bili-skill
