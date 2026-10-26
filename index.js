@@ -31,6 +31,7 @@ import os from 'node:os'
 import crypto from 'node:crypto'
 import { fileURLToPath } from 'node:url'
 import { shoot, clearFrames, listFrames, frameFileName } from './frames.js'
+import { qrPng } from './qrpng.js'
 import { qrPngVendor } from './qrvendor.js'
 
 export const name = 'bili-skill'
@@ -498,8 +499,11 @@ export function apply(ctx, config = {}) {
     const d = r.json?.data
     if (!d?.qrcode_key || !d?.url) throw new Error(`生成二维码失败：${r.json?.message || '返回里没有 qrcode_key'}`)
     loginStore.set(d.qrcode_key, { url: d.url, at: Date.now() })
-    /* 出二维码图：先用自研 qrpng，它不成就用 vendored 参考实现（本机实测：自研的编码层还没通过外部解码器） */
-    const qr = qrPngVendor(d.url)
+    /* 出二维码图：先用自研 qrpng（已用外部解码器 jsQR 逐字验通 v2..v6/L，登录链接约 116..118 字节 ⇒ 落 v6），
+       它不成就回落到 vendored 参考实现（那条覆盖 v1..v40，长链接或超出我范围时兜底）。 */
+    let qr = qrPng(d.url)
+    if (!qr.ok) { const fb = qrPngVendor(d.url); if (fb.ok) { log(`自研 QR 没出图（${qr.why}），回落 vendored：${qr.message || ''}`); qr = { ...fb, fellback_from: qr.why } } }
+    if (!qr.ok) qr = { ok: false, message: `两条路都没出图：自研 ${qr.why}；vendored ${qr.message || ''}` }
     let pngPath = null
     if (qr.ok) {
       /* 落在家目录的 tmp-qr/，不放 frames/：frames 是画面帧的管家目录（keep/clear 那套管），二维码混进去既不进 frame 账也没清理归口 */
@@ -510,7 +514,7 @@ export function apply(ctx, config = {}) {
       for (const f of fs.readdirSync(qrDir)) { if (f === path.basename(pngPath)) continue; try { fs.rmSync(path.join(qrDir, f)) } catch { /* 别人正拿着就别删 */ } }
     } else log('二维码图没出成：' + qr.message + '（照样回 url，你可以自己打开）')
     loginStore.set(d.qrcode_key + ':png', pngPath)
-    return { key: d.qrcode_key, url: d.url, qr_png: qr.ok ? { path: pngPath, bytes: qr.png.length, dim: qr.dim, engine: 'qrcode-generator-1.4.4(vendored)' } : { failed: qr.message }, note: '手机 B站 → 我的 → 扫一扫；确认时选"记住我"那种长期登录。约 180 秒过期。图在 qr_png 那份（家目录 tmp-qr/，每次 start 只留最新一张）。' }
+    return { key: d.qrcode_key, url: d.url, qr_png: qr.ok ? { path: pngPath, bytes: qr.png.length, dim: qr.dim, engine: qr.engine || 'qrpng(self)', ...(qr.fellback_from ? { fellback_from: qr.fellback_from } : {}) } : { failed: qr.message }, note: '手机 B站 → 我的 → 扫一扫；确认时选"记住我"那种长期登录。约 180 秒过期。图在 qr_png 那份（家目录 tmp-qr/，每次 start 只留最新一张）。' }
   }
   async function loginPoll(key) {
     if (!key) throw new Error('要传 bili_auth 之前给的 key')
@@ -657,7 +661,8 @@ export function apply(ctx, config = {}) {
       const a = String(args?.action || 'status')
       if (a === 'start') {
         const r = await loginStart()
-        const p = r.qr_png && r.qr_png.path
+        if (!r.qr_png || r.qr_png.failed) return { ok: true, ...r }
+        const p = r.qr_png.path
         if (!p) return { ok: true, ...r }
         let buffer = null
         try { buffer = fs.readFileSync(p) } catch { /* 刚写的就没了，算它不走 */ }
@@ -670,7 +675,8 @@ export function apply(ctx, config = {}) {
       if (a === 'clear') { try { fs.rmSync(credFile) } catch { /* 本来就没有 */ } cred = null; return { ok: true, message: '已删掉本机凭证' } }
       if (a === 'uid') { const n = String(args?.name || '').trim(); if (!n) throw new Error('action=uid 要传 name'); return { ok: true, ...await resolveUid(n) } }
       const w = await whoami()
-      return { ok: true, ...w, home, credentialFile: credFile, imported: credSource === 'import', credentialSource: credSource }
+      const srcNow = (() => { try { return JSON.parse(fs.readFileSync(path.join(home, 'credential-source.json'), 'utf8'))?.source || 'unknown' } catch { return 'unknown' } })()   // 现读：挂载时的快照会在扫码写入后仍然报 unknown
+      return { ok: true, ...w, home, credentialFile: credFile, imported: srcNow === 'import', credentialSource: srcNow }
     },
     presentCall: (args) => ({ card: 'generic', title: `bili_auth ${args?.action || 'status'}`, kind: 'execute', rawInput: args?.action || 'status' }),
   })

@@ -61,6 +61,13 @@ dsh plugin --profile <profile> add "<这个 tgz 的绝对路径>"   # 或 add bi
 4. 加原子操作：`index.js` 里再 `ctx.tools.register(...)`
 5. 状态口：`GET /api/bili-skill/status`（版本/登录状态/家目录/skill 来源/生效配置）—— 以后要给它做设置页就用这条路
 
+## 二维码（bili_auth start）
+
+- 出图引擎：**自研 `qrpng.js` 优先**，它不成才回落 `qrvendor.js`（vendored `qrcode-generator 1.4.4`，MIT，覆盖 v1..v40）；回包里 `qr_png.engine` 会写明用的哪个、有没有 `fellback_from`。
+- 自研的覆盖范围与依据（2026-10-26 实测）：**v2..v7 / L 一档**，byte 模式；正确性由**外部解码器 jsQR** 逐字验（活体 `.dsh\.tmp-src\qr-check.mjs` 22 条全过、插件自检 145 项）。做到 v7 是因为**真登录链接 145 字节，v6/L 上限只有 134 字节**。
+- 没做的：M/Q/H 档（请求别的 ecLevel 会被当成 L）；v8 及以上；数字/混合模式编码。超出范围时不会瞎画 —— 回 `too_long` 并交给回落链。
+- 图落在家目录 `tmp-qr/`（不放 `frames/`：那里是画面帧的管家目录，有 keep/clear 那套管），每次 `start` 只留最新一张。
+
 ## 已知边界
 
 - WBI 签名的 query 编码规则各家实现略有差异；`bili_api` 的 `sign` 只负责**加上**签名，端点到底吃不吃由返回值说话（`code=-412/-403` 时 mixin key 会自动作废重取）。每份 skill 里都写了"这个端点不通就换哪个"。
