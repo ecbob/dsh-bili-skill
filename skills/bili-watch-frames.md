@@ -1,31 +1,52 @@
 ---
 name: bili-watch-frames
-description: 看这条视频讲了什么：读字幕原文，或直接取画面帧（帧作为图片附件回到会话里，取到就看见）。
-whenToUse: 需要判断一条视频的实际内容（而不只是标题简介）、或要看画面/封面时。
+description: 看这条视频讲了什么：读字幕原文，或直接取画面帧（从 B站 故事板拼图里裁成单独一帧，作为图片附件回到会话里，取到就看见）。
+whenToUse: 需要判断一条视频的实际内容（而不只是标题简介）、或要看/留下某一秒的画面时。
 ---
 
 ## 先字幕，后画面
 
-**字幕是"说什么"，帧是"拍了什么"**，两者互补：字幕逐字、便宜、能全读；帧能看界面与构图，但受制于 B站 预生成的那一组故事板。
+**字幕是"说什么"，帧是"拍了什么"**，两者互补：字幕逐字、便宜、能全读；帧能看界面与构图，但精度受制于 B站 预生成的故事板格子。
 
-1. 拿 cid 与基本信息：`bili_api {path:"/x/web-interface/view", params:{bvid}}`。分 P 视频 `data.pages[]` 每段一个 `cid`（默认第一段）；顺带回 `title / owner / duration / stat / cover`。它那份 `data.subtitle.list[]` 里的 `subtitle_url` 常是空串，**别据此判定"没字幕"**，要走下一条。
+1. 拿 cid 与基本信息：`bili_api {path:"/x/web-interface/view", params:{bvid}}`。分 P 视频 `data.pages[]` 每段一个 `cid`；顺带回 `title / owner / duration / stat / pic`。它那份 `data.subtitle.list[]` 里的 `subtitle_url` 常是空串，**别据此判定"没字幕"**，要走下一条。
 2. 字幕列表：`bili_api {path:"/x/player/wbi/v2", params:{bvid,cid}, sign:true}` → `data.subtitle.subtitles[]`，取里面的 `subtitle_url`。空数组就是真没字幕（那就只能看帧或封面，或由带转写的插件补一份）。
 3. 字幕正文：`subtitle_url` 形如 `//aisubtitle.hdslb.com/bfs/ai_subtitle/…?auth_key=…` —— 字幕挂在 **hdslb** 这个 CDN 上，底座已经放行，直接 `bili_api {path:"<整条 URL>"}`（`//` 开头会自动补 `https:`）。这条响应**没有 `{code,message,data}` 信封**，正文就在 `body[]` 里，元素是 `{from, to, content}`，`from/to` 单位是**秒**。`auth_key` 有时效，过期回第 2 步重新拿一条 URL。
 
-## 取画面：一跳到账，不用再叫第二个工具
+## 取画面帧：`bili_shot`
 
-`bili_shot {bvid, num?, at?}` 用 B站 自带故事板（`/x/player/videoshot`），**不解码视频、不用 ffmpeg**：
+```
+bili_shot {bvid, num?, at?:[秒,…], p?:第几P}
+```
 
-- **帧直接作为图片附件回给会话**（宿主的图片契约是 `{type:'image', attachment: ref}`）。当前这扇窗口用的模型接图片，所以**取到帧就等于看到了帧**，不必再调第二个分析工具 —— 早先"先落文件、再叫别的插件分析"那一跳已经砍掉。
-- ⚠️ 口径要说清：`storyboardFrames` 数的是**返回的图数**，不是画面格数。B站 常把整条视频拼成**一张缩略矩阵**一次给回（本机实测：一条 12 分钟 4 分 P 的 GVG 视频，`storyboardFrames: 1`、`frames[0].at: null`，而那张 2730×1536 的图里有几十个画面格 ⇒ **一次调用就看到全片脉络**）。这种拼图里每格都很小，读得出构图与结算界面，读不出小字。
-- 要看清某一处的细节再用 `at:[秒,…]` 单点取（此时回的多半是单帧图，不是拼图），别指望故事板能任意时刻精确截图（它是 B站 预生成的那一组）。
-- 同时在 `bili-base/frames/` 落一份文件，路径回在 `frames[]` 里（给人看、或给别的插件复用）。
-- 只有两种情况会退化成只回路径：① 宿主没给附件服务；② 会话被切到不接图片输入的模型。这两种下工具回 `image_attached:false` + `image_skip_reason` + `hint`，**`frames[]` 里的路径照旧**。真要兜底才用视觉类插件：本机装了 `@liustack/modlens`，会话里的工具是 `modlens_read_image {path:"<那个路径>", prompt:"<想确认什么>"}`，引擎已指到本地 `http://127.0.0.1:8080/v1`（不花云 API 的钱）。
-- 帧糊、字小就如实说"看不清"：写「读出了 `可用余额`，数字没把握」，**别替它把数字敲定**。
+它做四件事：`view` 拿各 P 的 cid → `/x/player/videoshot?bvid&cid&p` 拿故事板 → 下载那张**整页拼图** → **按格子裁成单独一帧**再重编码（纯 JS 解 JPEG，见同包 `jpgcrop.js`，不用 ffmpeg）。
+
+- **每帧直接当图片附件回给会话**：接得住图片的模型取到就等于看见，不必再叫第二个分析工具。
+- 返回值里要看这几样，别说错口径：`grid`（`cols x rows`、`tileW x tileH`、拼图张数）、`intervalSec`（**每格多少秒**）、`intervalBasis`（这个秒数是凭什么定的）、`partIndex/partDuration/partStart`、以及每帧的 `{at, atTo, tile, path, bytes, width, height}`。
+- 本机实测的格子语义（2026-10-26，BV1VpjW6YE4o 四个 P 逐个验过）：**每个 P 有自己的 cid 和自己的故事板**；格子按 **约 5 秒一格** 从**该 P 的 0 秒**起铺（P1 215s → 用到第 42 格；P2 170s → 33；P3/P4 171s → 33）；`10x10=100` 格 ≈ 500 秒上限，**尾部补的是纯黑格**（不是"视频里这段没画面"）。
+- ⇒ 所以 `at` 的秒数是**相对那个 P 的起点**，不是整条视频的绝对秒；要绝对秒就自己按 `partStart` 累加换算。跨 P 时把 `p` 传对，或不传 `p` 让工具按秒自动选段（会在日志里说明选了哪段）。
+- `intervalSec` 优先由"接口给的 `ts[]` 差值"或"实测内容格数除该 P 时长"推出，`intervalBasis` 写清了是哪种；两者都拿不到才退回 5 秒/格。**别把 interval 当成精确值**：贴到某一秒最多精确到那一格（≈ ±interval/2）。
+- 拿不到故事板（`videoshot` 空）时工具回 `ok:false` + `cover`，此时只有封面可看 ⇒ 结论必须标"没看画面"。
+- 若哪天接口改成"一格一图"，工具会自动走另一条支路（直接存原图），`tiledMode:true` 就是这种情况。
+
+## 留下值得的那几帧：`bili_frames`
+
+```
+bili_frames {action:"keep", bvid, at:[秒,…], p?, reason}     # 裁成单帧存进 frames/keep/，不会被 clear 默认范围删
+bili_frames {action:"list"}                                   # frames/ 与 frames/keep/ 各有什么、多少字节
+bili_frames {action:"clear", scope?:'temp'|'keep'|'all', olderThanDays?, keepLast?}
+```
+
+- **值不值得留由你判断**：默认取帧（`bili_shot`）落的是临时帧，看完就该 `clear` 收掉；只有"以后还要用这张"的才 `keep`，并在 `reason` 里写清为什么（例如"P1 第 40 格：结算面板血量数字可读"）。
+- `clear` 默认 `scope:"temp"` —— **只删临时取帧，`keep/` 里的一律不动**；要连留下的一起删就明说 `scope:"all"`。可以 `olderThanDays` 只清旧的、`keepLast` 保住最新几个。
+- 留下的帧要**记一行账**（文件是本机的，账才是跨会话的记忆）：
+  `bili_ledger {action:"append", table:"frame", key:"file", rows:[{file,bvid,p,tile,at,bytes,reason}]}`
+- 说"看不清"就如实说：格子只有 480x270，小字糊就别替它把数字敲定。
 
 ## 怎么判断它真在看图、而不是在编
 
 换一张内容完全不同的图再跑一次做对照。本机这么测过：GVG 那条视频的封面读出 `虚空之剑` / `晓` / 血量 `2900/2900` / `124/121FPS`，而余额插件那条视频的第 0 秒帧读出 `可用余额` / `042.17` —— 两套文字互不相干 ⇒ 图确实进了模型。反过来，两张完全不同的图给出几乎一样的结论，就是没吃到图，别信。
+
+裁出来的帧是否真的对应那一秒，本机是这么验的（不用凭感觉）：同一张拼图分别按 `intervalSec` 算出的格子和按"整页当一格"的老算法对比，P1 里第 26、39 格本来就接近纯黑（视频里真出现过黑帧），而 43 格以后是补位纯黑 —— **能区分这两种黑**，就说明定位与解码都对。
 
 ## 什么都没看时的规矩
 
@@ -34,5 +55,19 @@ whenToUse: 需要判断一条视频的实际内容（而不只是标题简介）
 ## 成本口径（本地模型）
 
 - 字幕动辄几万字：**先决定要不要读**（用 `view` 的时长 / 播放 / 简介先筛），既然读了就别只读一半就下结论。
-- 帧按需：扫一眼 3 张就够判断题材；要核对界面细节才 `at:[…]` 多取几个点。帧比字幕贵（每张都要过一次视觉输入）。
+- 帧按需：扫一眼 3 张就够判断题材；要核对界面细节才 `at:[…]` 单点取。帧比字幕贵（每张都要过一次视觉输入）。
+- 临时帧是耗材：用完 `bili_frames {action:"clear"}` 收掉，别让 `frames/` 堆成几百 MB（`list` 就是给你先看一眼有多少的）。
 - 看过就落账：`bili_ledger {action:"append", table:"seen", key:"bvid", rows:[{bvid, verdict:"挑了"|"跳过", evidence:"字幕"|"帧"|"标题+简介", reason:"一句话"}]}` —— `evidence` 这个字段就是将来复盘「这条我当时是怎么定的」的依据。
+
+## 底座（dsh-bili-base v0.6.0）
+
+**说明书只是指令，本身不带记忆。** 常驻工具 5 只：`bili_auth`（登录/身份/凭证）、`bili_api`（通用端点，自动 Cookie/CSRF/WBI）、`bili_shot`（故事板定位 + 裁成单帧，帧作为图片附件回会话）、`bili_frames`（keep / clear / list 管 frames 目录）、`bili_ledger`（记账：tables/read/append/delete，按 key 去重）。
+
+**记忆在这儿**：家目录 `C:\Users\ECBob\.dsh\bili-base`
+- 账本 `ledger/`：seen / comment / dm / note / frame（新）
+- 凭证文件在。但"登录与否"要用 `bili_auth {action:"status"}` 现查
+- 配置 `bili-base\config.json`；日志 `bili-base\base.log`；帧 `bili-base\frames\`（留下的在 `frames\keep\`）
+
+**缓存边界**：正文每次现读磁盘 ⇒ 改 md 的正文立刻生效；目录也每次现扫，但宿主那份目录缓存没有 TTL、只有提供方喊 invalidate 才清，而默认我**不监视**文件（config 里 `watchSkills:true` 才监视）⇒ 新增/改名/换描述的说明书要等宿主重组才进目录，改正文不用。
+
+**要改这份说明书**：编辑 `C:\Users\ECBob\.dsh\profiles\desktop\node_modules\dsh-bili-base\skills\bili-watch-frames.md`（家目录放同名文件就顶掉包内那份，升级不冲）。

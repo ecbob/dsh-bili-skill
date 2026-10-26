@@ -1,5 +1,5 @@
 // dsh-bili-base 离线自检（重建版）：临时家目录 + 假 fetch + 假 ctx，不联网、不写真实家目录
-// 覆盖：导出形状、4 只工具的声明合规（照宿主 schema 规则自查）、URL 白名单、非信封响应、
+// 覆盖：导出形状、5 只工具的声明合规（含 bili_frames）、jpgcrop/frames 的单帧裁切与格子语义、
 // 无损 JSON、cookie 两种拼写、补 csrf 必须在序列化之前、murmur3 指纹向量、Gaia 三步序列、
 // skill provider 契约与活脚注、家目录覆盖与现扫、记账的增/读/删/去重与脏行容忍、坏配置不炸。
 import fs from 'node:fs'
@@ -57,7 +57,7 @@ mod.apply(a.ctx, { home, logLevel: 'silent' })
 /* ── 1. 导出形状 ── */
 eq('包名导出是 bili-base', mod.name, 'bili-base')
 eq('硬注入 = tools + skills', mod.inject, ['tools', 'skills'])
-eq('注册了 4 只工具', a.tools.map((t) => t.name), ['bili_auth', 'bili_api', 'bili_shot', 'bili_ledger'])
+eq('注册了 5 只工具', a.tools.map((t) => t.name), ['bili_auth', 'bili_api', 'bili_shot', 'bili_frames', 'bili_ledger'])
 ok('每只工具都有非空 description 与 presentCall', a.tools.every((t) => t.description && t.description.length > 30 && typeof t.presentCall === 'function'))
 ok('effect 挂上了 skill provider 的 disposer', a.effects.some(([, l]) => String(l).includes('skills provider')))
 
@@ -74,9 +74,9 @@ const hostViolations = (node, p = '$', out = []) => {
   return out
 }
 const viol = a.tools.map((t) => [t.name, hostViolations(t.parameters)]).filter(([, v]) => v.length)
-ok('4 只工具的 parameters 按宿主规则干净', viol.length === 0, JSON.stringify(viol))
+ok('5 只工具的 parameters 按宿主规则干净', viol.length === 0, JSON.stringify(viol))
 const violO = a.tools.map((t) => [t.name, hostViolations(t.output?.schema)]).filter(([, v]) => v.length)
-ok('4 只工具的 output.schema 按宿主规则干净', violO.length === 0, JSON.stringify(violO))
+ok('5 只工具的 output.schema 按宿主规则干净', violO.length === 0, JSON.stringify(violO))
 ok('parameters 顶层都是 object 型且 additionalProperties 明确', a.tools.every((t) => t.parameters.type === 'object' && 'additionalProperties' in t.parameters))
 ok('输出 schema 里钉了类型的字段只有 ok / message（其余自由，防 null 被判不合规）', a.tools.every((t) => Object.keys(t.output.schema?.properties || {}).every((k) => k === 'ok' || k === 'message')))
 const shot = a.tools.find((t) => t.name === 'bili_shot')
@@ -196,7 +196,7 @@ ok('凭证那行只声明文件在不在，登录要现查', got.content.include
 const dirs = ['ledger', 'frames', 'skills']
 ok('家目录结构建好了（ledger / frames 都在）', dirs.every((d) => fs.existsSync(path.join(home, d))))
 const aBad = mkCtx(); mod.apply(aBad.ctx, { home: path.join(tmp, 'bad'), logLevel: 'nope', requestTimeoutMs: 'x', maxBytes: 0, framesDefault: 0 })
-ok('坏配置不炸（值被 coerce 回默认）', aBad.tools.length === 4)
+ok('坏配置不炸（值被 coerce 回默认）', aBad.tools.length === 5)
 
 /* ── 12. 覆盖：家目录同名文件赢，且正文现读磁盘 ── */
 const ovHome = path.join(tmp, 'ovr', 'bili-base')
@@ -277,7 +277,118 @@ async function riskCase(homeName, plan, extraCfg) {
   ok('没撞风控的 POST 一个多余请求都不发（默认 gaia 关 = 真的一次都不上报）', seq === 'add', seq)
 }
 
+/* ── 17. 单帧裁切（jpgcrop + frames）：拿 .NET 写的 fixture 盯解码、盯 5 秒/格、盯 keep/clear 边界 ── */
+{
+  const jpg = await import(pathToFileURL(path.join(pkgDir, 'jpgcrop.js')).href)
+  const fr = await import(pathToFileURL(path.join(pkgDir, 'frames.js')).href)
+  const fxDir = path.join(pkgDir, 'fixtures')
+  ok('包里有那三张 .NET 基准图（不许用我自己编的图自证自）', ['ref-flat.jpg', 'ref-hgrad.jpg', 'ref-vgrad.jpg'].every((f) => fs.existsSync(path.join(fxDir, f))))
+  const want = (x, y, mode) => (mode === "flat" ? 200 : mode === "h" ? x * 32 : y * 32)
+  for (const [name, mode] of [["ref-flat.jpg", "flat"], ["ref-hgrad.jpg", "h"], ["ref-vgrad.jpg", "v"]]) {
+    const img = jpg.decodeJPEG(fs.readFileSync(path.join(fxDir, name)))
+    let maxd = 0
+    for (let y = 0; y < 8; y++) for (let x = 0; x < 8; x++) { const c = jpg.cropToRGB(img, x, y, 1, 1); maxd = Math.max(maxd, Math.abs(c[0] - want(x, y, mode))) }
+    // 常量块解成渐变就是 IDCT 空间/频率下标写反的症状（本机真栽过：200→142）
+    ok("fixture " + name + " 与 .NET 写的原图逐像素对得上（DC-only 必须是纯色）", img.width === 8 && img.height === 8 && maxd <= 2, "maxΔ=" + maxd)
+  }
+  {
+    const rgb = Buffer.alloc(8 * 8 * 3)
+    for (let i = 0; i < 64; i++) { rgb[i * 3] = rgb[i * 3 + 1] = rgb[i * 3 + 2] = 200 }
+    const back = jpg.cropToRGB(jpg.decodeJPEG(jpg.encodeJPEG(rgb, 8, 8, 95, "444")), 0, 0, 8, 8)
+    let maxd = 0
+    for (let i = 0; i < 64; i++) maxd = Math.max(maxd, Math.abs(back[i * 3] - 200))
+    ok("自己编的纯色块自己还得解成纯色（编解码共用规范码表这条不能歪）", maxd <= 4, "maxΔ=" + maxd)
+  }
+  {
+    const grid = fr.gridOf({ img_x_len: 10, img_y_len: 10, img_x_size: 480, img_y_size: 270, image: ['//bimp.hdslb.com/x-0001.jpg'], ts: [] })
+    ok("gridOf 把 videoshot 的分格规则读出来", grid.tilesPerSheet === 100 && grid.tileW === 480 && grid.sheets.length === 1, JSON.stringify({ t: grid.tilesPerSheet, w: grid.tileW }))
+    const smap = fr.secondsMapOf({ partDuration: 215, contentTiles: 43, grid, ts: [] })
+    ok("215s / 43 格 ⇒ 5.00 秒一格（本机逐 P 实测的形状），且 tileOfSec 夹在内容格里", Math.abs(smap.interval - 5) < 1e-9 && smap.tileOfSec(0) === 0 && smap.tileOfSec(214) === 42 && smap.tileOfSec(9999) === 42, JSON.stringify({ i: smap.interval, a: smap.tileOfSec(214), b: smap.tileOfSec(9999) }))
+    ok("补位黑格不是‘没画面’：算出来的 interval 只按内容格数除时长", /内容格数 43/.test(smap.basis), smap.basis)
+    const viaTs = fr.secondsMapOf({ partDuration: 100, contentTiles: 7, grid, ts: [0, 5, 10] })
+    ok('接口自己给了 ts[] 时优先用它（相邻两格差就是 interval）', viaTs.interval === 5 && /ts\[\]/.test(viaTs.basis), viaTs.basis)
+    const fb = fr.secondsMapOf({ partDuration: 100, contentTiles: 0, grid, ts: [] })
+    ok('内容格数测不出时退回 5 秒/格并说明是兜底', fb.interval === 5 && /兜底|退回/.test(fb.basis), fb.basis)
+    const spread = fr.pickTiles({ num: 3, smap })
+    ok("不传 at 时只在有内容的格里均匀撒（不会撒到尾部补位）", spread.length === 3 && spread.every((s) => s.tile <= 42) && new Set(spread.map((s) => s.tile)).size === 3, JSON.stringify(spread.map((s) => s.tile)))
+    const byAt = fr.pickTiles({ at: [3, 4, 220], smap })
+    ok("给了 at 就按秒贴最近格、同格去重", JSON.stringify(byAt.map((s) => s.tile)) === JSON.stringify([0, 42]), JSON.stringify(byAt))
+  }
+  {
+    const dir = path.join(tmp, 'frames-tree')
+    fs.mkdirSync(path.join(dir, 'keep'), { recursive: true })
+    fs.writeFileSync(path.join(dir, 'a-tmp.jpg'), Buffer.from([0xff, 0xd8, 0xff, 0xd9]))
+    fs.writeFileSync(path.join(dir, 'keep', 'BV1keep.jpg'), Buffer.from([0xff, 0xd8, 0xff, 0xd9]))
+    const one = fr.clearFrames(dir)
+    ok("framesClear 默认只删临时帧，keep/ 里的不动", one.removedCount === 1 && fr.listFrames(dir).kept.length === 1, JSON.stringify(one.removed))
+    const all = fr.clearFrames(dir, { scope: "all" })
+    ok("scope:all 才会连留下的帧一起删", all.ok === true && all.removedCount === 1 && fr.listFrames(dir).count === 0, JSON.stringify(all.removed))
+    const badScope = fr.clearFrames(dir, { scope: "everything" })
+    ok("scope 不认时如实报错（不当‘删干净了’糊过去）", badScope.ok === false && /temp/.test(badScope.message), badScope.message)
+  }
+  {
+    const real = globalThis.fetch
+    const fxBytes = fs.readFileSync(path.join(fxDir, 'ref-flat.jpg'))
+    globalThis.fetch = async (u) => {
+      const s = String(u)
+      if (s.includes('/x/web-interface/view')) return { ok: true, status: 200, headers: { get: () => 'application/json' }, text: async () => JSON.stringify({ code: 0, message: 'OK', data: { aid: 1, cid: 9, pic: 'p', title: 'T', duration: 727, owner: { name: 'U' }, pages: [{ cid: 9, page: 1, part: 'P1', duration: 215 }, { cid: 10, page: 2, part: 'P2', duration: 170 }] } }), json: async () => null }
+      if (s.includes('/x/player/videoshot')) return { ok: true, status: 200, headers: { get: () => 'application/json' }, text: async () => JSON.stringify({ code: 0, message: 'OK', data: { img_x_len: 2, img_y_len: 2, img_x_size: 4, img_y_size: 4, image: ['//aisubtitle.hdslb.com/fixture/ref-flat.jpg'], ts: [], index: [] } }), json: async () => null }
+      if (s.includes('fixture/ref-flat.jpg')) return { ok: true, status: 200, headers: { get: () => 'image/jpeg' }, arrayBuffer: async () => fxBytes, text: async () => '', json: async () => null }
+      return { ok: false, status: 404, headers: { get: () => 'text/html' }, text: async () => 'nope', json: async () => null }
+    }
+    const shotDir = path.join(tmp, 'shot-tree')
+    const deps = {
+      call: async ({ path: pp }) => (pp.includes('/x/web-interface/view')
+        ? { ok: true, code: 0, message: 'OK', data: { aid: 1, cid: 9, pic: 'p', title: 'T', duration: 727, owner: { name: 'U' }, pages: [{ cid: 9, page: 1, part: 'P1', duration: 215 }, { cid: 10, page: 2, part: 'P2', duration: 170 }] } }
+        : pp.includes('/x/player/videoshot')
+          ? { ok: true, code: 0, message: 'OK', data: { img_x_len: 2, img_y_len: 2, img_x_size: 4, img_y_size: 4, image: ['//aisubtitle.hdslb.com/fixture/ref-flat.jpg'], ts: [], index: [] } }
+          : { ok: false, code: -1, message: '假 call 不认这条路：' + pp }),
+      log: () => {}, framesDir: shotDir, UA: 'u', REFERER: 'https://www.bilibili.com', timeoutMs: 8000,
+    }
+    const r = await fr.shoot(deps, { bvid: 'BV1fixturetest', num: 2 })
+    globalThis.fetch = real
+  {
+    // 四象限基准（.NET 写的：左上10 右上80 左下160 右下240）—— 只看尺寸会放过落位错，必须看内容
+    const qimg = jpg.decodeJPEG(fs.readFileSync(path.join(fxDir, 'ref-quads.jpg')))
+    const cellMean = (col, row) => { const c = jpg.cropToRGB(qimg, col * 4 + 2, row * 4 + 2, 1, 1); return Math.round((c[0] + c[1] + c[2]) / 3) }
+    const qexp = [[0, 0, 10], [1, 0, 80], [0, 1, 160], [1, 1, 240]]
+    const qok = qexp.every(([col, row, exp]) => Math.abs(cellMean(col, row) - exp) <= 12)
+    ok('四象限基准图逐格内容对得上（行=floor(tile/cols)、列=tile%cols 的落位不能歪）', qok, qexp.map(([c, r, e]) => `(${c},${r})期望${e}实得${cellMean(c, r)}`).join(' '))
+    const qtiles = [0, 1, 2, 3].map((t) => ({ t, m: cellMean(t % 2, Math.floor(t / 2)) }))
+    ok('按 tile 公式取格后亮度顺序必须是 10,80,160,240（早先双重相乘把 y 算成 16，就是这类错）', qtiles.map((o) => o.m).join(',') === '10,80,160,240' || Math.abs(qtiles[0].m - 10) <= 12 && Math.abs(qtiles[3].m - 240) <= 12 && Math.abs(qtiles[1].m - 80) <= 12 && Math.abs(qtiles[2].m - 160) <= 12, qtiles.map((o) => o.t + ':' + o.m).join(' '))
+    // shoot 也得用同一套落位：裁四象限这张当拼图，四格亮度必须各不相同
+    const realQ = globalThis.fetch
+    const qBytes = fs.readFileSync(path.join(fxDir, 'ref-quads.jpg'))
+    globalThis.fetch = async (u) => {
+      const s = String(u)
+      if (s.includes('fixture/ref-quads.jpg')) return { ok: true, status: 200, headers: { get: () => 'image/jpeg' }, arrayBuffer: async () => qBytes, text: async () => '', json: async () => null }
+      return { ok: false, status: 404, headers: { get: () => 'text/html' }, text: async () => 'x', json: async () => null }
+    }
+    const dq = { ok: true, code: 0, message: 'OK', data: { aid: 1, cid: 9, pic: 'p', title: 'T', duration: 20, owner: { name: 'U' }, pages: [{ cid: 9, page: 1, part: 'P1', duration: 20 }] } }
+    const dv = { ok: true, code: 0, message: 'OK', data: { img_x_len: 2, img_y_len: 2, img_x_size: 4, img_y_size: 4, image: ['//aisubtitle.hdslb.com/fixture/ref-quads.jpg'], ts: [], index: [] } }
+    const qDir = path.join(tmp, 'quad-shot')
+    const rq = await fr.shoot({ call: async ({ path: pp }) => (pp.includes('/x/web-interface/view') ? dq : dv), log: () => {}, framesDir: qDir, UA: 'u', REFERER: 'https://www.bilibili.com', timeoutMs: 8000 }, { bvid: 'BV1quadtest01', at: [1, 6, 11, 16] })
+    globalThis.fetch = realQ
+    const lum = rq.frames.map((f) => { const c = jpg.cropToRGB(jpg.decodeJPEG(fs.readFileSync(f.path)), 2, 2, 1, 1); return Math.round((c[0] + c[1] + c[2]) / 3) })
+    ok('shoot 裁出的四格亮度各不相同且按 tile 顺序递增（10<80<160<240）', rq.ok === true && rq.frames.length === 4 && lum[0] < lum[1] && lum[1] < lum[2] && lum[2] < lum[3] && lum.every((v, k) => Math.abs(v - [10, 80, 160, 240][k]) <= 14), 'tile→亮度: ' + rq.frames.map((f, k) => f.tile + ':' + lum[k]).join(' '))
+  }
+
+    ok("shoot 从整页拼图里裁出**单独一帧**（4x4），不是把整页 8x8 直接端回来", r.ok === true && r.frames.length === 2 && r.frames.every((f) => f.width === 4 && f.height === 4) && fs.existsSync(r.frames[0].path), JSON.stringify(r.frames.map((f) => ({ tile: f.tile, w: f.width, at: f.at }))))
+    ok("shoot 把 interval 与它的依据一起报出来（不说清依据就是瞎猜）", r.intervalSec === 53.75 && /内容格数/.test(r.intervalBasis), JSON.stringify({ i: r.intervalSec, b: r.intervalBasis }))
+    ok("shoot 认得这是分 P 视频并带出 partStart/partDuration", r.partIndex === 1 && r.partDuration === 215 && Array.isArray(r.pages) && r.pages.length === 2 && r.pages[1].partStart === 215, JSON.stringify({ pi: r.partIndex, ps: r.pages[1] && r.pages[1].partStart }))
+    const fr2 = a.tools.find((t) => t.name === 'bili_frames')
+    ok("bili_frames 在声明里且 action 三种说法都写进了 description", /keep/.test(fr2.description) && /clear/.test(fr2.description) && /list/.test(fr2.description) && /不动 keep/.test(fr2.description), fr2.description.slice(0, 70))
+    const li = await fr2.execute({ action: 'list' }, { agent: { provider: 'x', model: 'y' } })
+    ok("list 回的是目录现状（数量/字节/哪些是留下的）", li.ok === true && typeof li.count === 'number' && Array.isArray(li.kept), JSON.stringify({ c: li.count, b: li.bytes }))
+    const wrong = await fr2.execute({ action: 'nuke' }, { agent: { provider: 'x', model: 'y' } })
+    ok("action 不认时如实报错", wrong.ok === false && /keep/.test(wrong.message), wrong.message)
+  }
+}
+
 try { fs.rmSync(tmp, { recursive: true, force: true }) } catch { /* 收尾删不掉就算了 */ }
 console.log(`\ndsh-bili-base 离线自检：${pass} 项通过${fail ? `，${fail} 项失败` : ''}${skipped ? `，${skipped} 项跳过` : ''}`)
 console.log(fail ? 'SOME FAIL' : 'ALL PASS')
 process.exit(fail ? 1 : 0)
+
+
+

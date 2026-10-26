@@ -5,7 +5,7 @@ B站 能力的**底座**插件：纯 JS、零运行时依赖（只用 node 内�
 ## 架构
 
 ```
-base（4 只常驻工具）                       skills（7 份 SKILL.md，按需加载）
+base（5 只常驻工具）
   bili_auth    登录 / 凭证 / 昵称↔UID   ←   bili-search        搜索、筛选、落账口径
   bili_api     通用端点（Cookie/CSRF/WBI）←  bili-watch-frames  取帧 → 交给 read_image / 视觉插件
   bili_shot  B站 故事板取帧            ←   bili-comment       发评论 / @ 的写法 / 风控
@@ -26,7 +26,8 @@ base（4 只常驻工具）                       skills（7 份 SKILL.md，按�
 | `config.json` | 运行时配置（优先于 patch config） |
 | `uid-cache.json` | 昵称 → UID，带时间戳，TTL 默认 7 天 |
 | `ledger/<表名>.jsonl` | 记账。建议表名：`seen` / `comment` / `dm` / `note` |
-| `frames/<bvid>-…jpg` | 取到的画面帧（给 `read_image` 或视觉类插件吃） |
+| `frames/<bvid>-…jpg` | 临时取帧（`bili_frames {action:"clear"}` 默认删这些） |
+| `frames/keep/<bvid>-…jpg` | **裁成单独一帧、决定长期留下的**（配合 `ledger/frame` 记为什么留） |
 | `skills/<name>.md` | **你写的覆盖版说明书**：放同名文件就优先用它，插件升级不冲（provider 每次现读磁盘） |
 | `base.log` | 本插件日志（写明每次是否签了 wbi、用的哪份凭证） |
 
@@ -34,7 +35,8 @@ base（4 只常驻工具）                       skills（7 份 SKILL.md，按�
 
 - `bili_auth {action: status|start|poll|import|clear|uid, key?, name?}` —— 扫码登录两步（`start` 拿 url+key → `poll`）；`import` 从 `bili-duty/` 抄一份凭证省一次扫码；`uid` 把昵称换成 UID（带缓存）。
 - `bili_api {path, method?, params?, body?, sign?}` —— 唯一的网络出口。自动带 Cookie；POST 自动补 `csrf=bili_jct`；`sign:true` 时做 WBI 签名（`wts` + `w_rid`，`web_location` 默认 1550101）。`path` 可以是 `/x/...`（打 `api.bilibili.com`）或整条 `https://im.bilibili.com/...`。回 `{ok, code, message, data}`，超长截断。
-- `bili_shot {bvid, num?, at?}` —— 用 B站 自带故事板 `x/player/videoshot` 取帧，**不解码视频、不用 ffmpeg**；帧落成文件并回路径。
+- `bili_shot {bvid, num?, at?, p?}` —— 故事板定位 + **从整页拼图里裁成单独一帧**（纯 JS 解/编 JPEG，见 `jpgcrop.js`，不用 ffmpeg）；裁好的帧当**图片附件直接回会话**（接图片的模型当场看见），同时在 `frames/` 落一份文件。
+- `bili_frames {action: keep|clear|list, bvid?, at?, p?, reason?, scope?, olderThanDays?, keepLast?}` —— `keep` 把某几秒裁成单帧长期留在 `frames/keep/`（值不值得留由你判断，理由记进 `ledger/frame`）；`clear` 默认只删临时取帧、**不动 keep/**；`list` 报有多少、占多少字节。
 - `bili_ledger {action: tables|read|append|delete, table, rows?, key?, removeKey?, limit?}` —— append 可按某字段去重（例 `key:"bvid"`），每表一个 jsonl。
 
 ## 装
@@ -58,7 +60,9 @@ dsh plugin --profile <profile> add "<这个 tgz 的绝对路径>"   # 或 add ds
 
 - WBI 签名的 query 编码规则各家实现略有差异；`bili_api` 的 `sign` 只负责**加上**签名，端点到底吃不吃由返回值说话（`code=-412/-403` 时 mixin key 会自动作废重取）。每份 skill 里都写了"这个端点不通就换哪个"。
 - 只认 `*.bilibili.com`；不是万能 HTTP 客户端。
-- 取帧只有故事板帧（B站 预生成的那些），**不能**任意时刻精确截图；要真解码得另找工具（ffmpeg 类插件）。
+- 取帧只能贴到故事板格子：本机实测**每格约 5 秒、按每个分 P 从 0 秒起铺、尾部补纯黑**（10x10=100 格 ≈ 500 秒上限），所以 `at` 是相对该 P 的秒、精度 ≈ ±interval/2；返回值里的 `intervalSec` / `intervalBasis` 会说清这个秒数是凭什么算的（`ts[]` > 实测内容格数 > 兜底 5s）。
+- 单帧是从拼图里**裁出来重编码**的（每格高 270 不是 8 的倍数，格边界跨 8x8 块 ⇒ 做不了无损 MCU 裁剪，必须解码再编）；解码/编码在同包 `jpgcrop.js`，只支持 baseline（SOF2 progressive 直接抛错不硬解），色度放大用最邻近（.NET 用平滑，比对时差 1~2 属正常）。
+- 这三张 `fixtures/ref-*.jpg` 是 Windows `System.Drawing`（独立编码器、标准 Annex K 码表）写的，自检拿它们当**外部基准**盯解码 —— 早先我把 IDCT 的空间/频率下标写反，DC-only 的块被解成 200→142 的渐变，就是这三张一跑就现形的。
 - 评论/私信是**拿你的号说话**：本插件只提供通道与口径，不会自己决定发不发（没有任何定时器 / 自动轮）。
 
 ## 两条实测出来的硬口径（别改回去）

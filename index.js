@@ -13,7 +13,8 @@
  *     bili_credential.json     sessdata / bili_jct / buvid3 / dedeuserid（字段名与 bili-scroll 一致，可直接互抄）
  *     uid-cache.json           昵称 → UID（带时间戳，TTL 7 天）
  *     ledger/<表名>.jsonl      记账（append-only，可按 key 去重）
- *     frames/<bvid>-…          取到的画面帧（PNG/JPG，给 read_image 或视觉插件吃）
+ frames/<bvid>-…          取到的画面帧（临时物，framesClear 默认删这些）
+ frames/keep/<bvid>-…       值得长期留下的**单独一帧**（framesClear 默认不碰；配合 ledger 的 frame 表记住为什么留）
  *     base.log                 本插件自己的日志（含"这次调用签了 wbi / 用了哪份凭证"）
  *
  * 拓展点（按便宜程度排序）：
@@ -29,6 +30,7 @@ import path from 'node:path'
 import os from 'node:os'
 import crypto from 'node:crypto'
 import { fileURLToPath } from 'node:url'
+import { shoot, clearFrames, listFrames, frameFileName } from './frames.js'
 
 export const name = 'bili-base'
 /** 硬注入：这两样在本 profile 里必然存在（tools 注册 / skills 注册表） */
@@ -485,48 +487,6 @@ export function apply(ctx, config = {}) {
     return { ...rec, from: 'search' }
   }
 
-  // ───────────────────────── 画面帧（B站自带故事板，不解码视频） ─────────────────────────
-  async function frames({ bvid, num, at }) {
-    if (!bvid) throw new Error('要传 bvid')
-    const v = await call({ path: '/x/web-interface/view', params: { bvid } })
-    if (!v.ok) throw new Error(`视频信息读不到：code=${v.code} ${v.message}`)
-    const cid = Number(v.data.cid)
-    const duration = Number(v.data.duration) || 0
-    const want = Math.max(1, Math.min(12, Number(num) || cfg.framesDefault))
-    const snap = await call({ path: '/x/player/videoshot', params: { bvid, cid, p: 1 } })
-    const imgs = Array.isArray(snap.data?.image) ? snap.data.image : []
-    const ts = Array.isArray(snap.data?.ts) ? snap.data.ts : []
-    if (!imgs.length) {
-      return { ok: false, message: `这条视频没有故事板帧（videoshot 回 code=${snap.code} ${snap.message}）—— 只有封面可用`, cover: v.data.pic, aid: v.data.aid, cid, duration }
-    }
-    const picks = []
-    if (Array.isArray(at) && at.length) {
-      for (const sec of at.slice(0, 12)) {
-        let bi = -1, bd = Infinity
-        ts.forEach((t, i) => { const d = Math.abs(Number(t) - Number(sec)); if (d < bd) { bd = d; bi = i } })
-        if (bi >= 0 && imgs[bi]) picks.push({ sec: Number(sec), url: imgs[bi], ts: Number(ts[bi]) })
-      }
-    } else {
-      const step = Math.max(1, Math.floor(imgs.length / want))
-      for (let i = 0; i < imgs.length && picks.length < want; i += step) picks.push({ sec: Number(ts[i]), url: imgs[i], ts: Number(ts[i]) })
-    }
-    const files = []
-    for (const [i, pk] of picks.entries()) {
-      const url = String(pk.url).startsWith('http') ? pk.url : `https:${pk.url}`
-      const r = await fetch(`${url.replace(/^https:/, 'https:')}${url.includes('?') ? '&' : '?'}referer=${encodeURIComponent(REFERER)}`, { headers: { 'user-agent': UA, referer: REFERER }, signal: AbortSignal.timeout(cfg.requestTimeoutMs) }).catch((e) => { log(`取帧失败 ${i}: ${String(e?.message || e).slice(0, 120)}`); return null })
-      if (!r || !r.ok) continue
-      const buf = Buffer.from(await r.arrayBuffer())
-      const ext = /\.webp/i.test(url) ? 'webp' : /\.png/i.test(url) ? 'png' : 'jpg'
-      const tsNum = Number(pk.ts ?? pk.sec)
-      const tag = Number.isFinite(tsNum) ? String(Math.round(tsNum)).padStart(5, '0') : String(i).padStart(5, '0')
-      const file = path.join(framesDir, `${bvid}-${tag}-${i}.${ext}`)
-      fs.writeFileSync(file, buf)
-      files.push({ at: pk.sec ?? pk.ts, path: file, bytes: buf.length })
-    }
-    log(`取帧 ${files.length}/${picks.length} 张（${bvid}，cid ${cid}，故事板共 ${imgs.length} 帧）`)
-    return { ok: files.length > 0, title: v.data.title, up: v.data.owner?.name, cover: v.data.pic, aid: v.data.aid, cid, duration, storyboardFrames: imgs.length, frames: files, note: '帧已作为图片附件直接回给会话（模型接图片时当场可见，不必再叫别的工具分析）；frames/ 里同时留了一份文件，可给别人或别的插件看。' }
-  }
-
   // ───────────────────────── 记账 ─────────────────────────
   const tableName = (t) => { const s = String(t || 'notes').trim().toLowerCase().replace(/[^a-z0-9_\u4e00-\u9fff-]/g, '-'); return s || 'notes' }
   const tableFile = (t) => path.join(ledgerDir, `${tableName(t)}.jsonl`)
@@ -655,22 +615,67 @@ export function apply(ctx, config = {}) {
 
   tool({
     name: 'bili_shot',
-      description: '取这条视频的画面帧（用 B站 自带故事板 x/player/videoshot，不解码、不用 ffmpeg）：默认均匀取 framesDefault 张，传 at 就按秒贴最近帧。**帧直接当图片附件回给会话**（当前模型接图片就能当场看见，不必再叫别的工具分析）；同时也在 bili-base/frames/ 落一份文件并回路径。宿主没给附件服务、或模型不接图片时，退化成只回路径 + hint。⚠️ B站 常把整条视频拼成**一张缩略矩阵**一次给回：storyboardFrames 数的是返回的图数、不是画面格数，frames[].at 可能是 null。顺带回标题/UP/封面/cid/duration。',
+    description: '取这条视频的画面帧：用 B站 自带故事板 x/player/videoshot 定位格子，再把那一格从整页拼图里**裁成单独一帧**（纯 JS 解 JPEG，不用 ffmpeg）。默认均匀取 framesDefault 张，传 at 就按秒贴最近格。**帧直接当图片附件回给会话**，接得住图片的模型当场看得见，不必再叫别的工具分析；frames/ 里同时留一份文件。本机实测的格子语义：每个分 P 有自己的 cid 与故事板，格子按约 5 秒一格从该 P 的 0 秒起铺、尾部补纯黑（10x10=100 格 ≈ 上限 500 秒）—— 所以返回值给 intervalSec / intervalBasis / grid / partDuration / partStart，at 是**相对那个 P 的起点**。宿主接不住图片、或模型不收图片时退化成只回路径 + hint。',
     parameters: {
       bvid: str('BV号', true),
       num: { type: 'integer', description: '取几帧（1-12，默认取插件配置 framesDefault）' },
-      at: { type: 'array', items: { type: 'number' }, description: '指定秒列表；不传就按时长均匀取' },
+      at: { type: 'array', items: { type: 'number' }, description: '要哪几秒（相对所选 P 的起点）；不传就在有内容的格里均匀取' },
+      p: { type: 'integer', description: '哪个分 P；不给且给了 at 就自动选装得下这些秒的那段，否则取 P1' },
     },
-      output: { schema: { type: 'object', properties: {}, additionalProperties: true }, render: (_a, v) => __renderWithImages(v) },
-      execute: async (args, exec) => {
-        try {
-          const r = await frames(args)
-          const imgs = (r.frames || []).map((f) => ({ buffer: fs.readFileSync(f.path), mediaType: /\.png$/i.test(f.path) ? 'image/png' : 'image/jpeg' }))
-          const a = imgs.length ? await __attachImages((k) => ctx.get?.(k), exec, imgs) : { ok: false, reason: 'no_frames', hint: '这一条没有可附的帧' }
-          return { ok: true, ...r, image_attached: a.ok, ...(a.ok ? { images: a.refs } : { image_skip_reason: a.reason, hint: a.hint }) }
+    output: { schema: { type: 'object', properties: {}, additionalProperties: true }, render: (_a, v) => __renderWithImages(v) },
+    execute: async (args, exec) => {
+      try {
+        const r = await shoot({ call, log, framesDir, UA, REFERER, timeoutMs: cfg.requestTimeoutMs }, args || {})
+        const imgs = (r.frames || []).map((f) => ({ buffer: fs.readFileSync(f.path), mediaType: /\.png$/i.test(f.path) ? 'image/png' : 'image/jpeg' }))
+        const a = imgs.length ? await __attachImages((k) => ctx.get?.(k), exec, imgs) : { ok: false, reason: 'no_frames', hint: '这一条没有可附的帧' }
+        return { ok: true, ...r, image_attached: a.ok, ...(a.ok ? { images: a.refs } : { image_skip_reason: a.reason, hint: a.hint }) }
       } catch (e) { return { ok: false, message: String(e?.message || e) } }
-      },
+    },
     presentCall: (args) => ({ card: 'generic', title: `bili_shot ${args?.bvid || ''}`, kind: 'execute', rawInput: args?.bvid || '' }),
+  })
+
+  tool({
+    name: 'bili_frames',
+    description: '管家目录 frames/ 里的画面帧：action=keep（把某几秒**裁成单独一帧长期留下**，存进 frames/keep/，不会被 clear 的默认范围删）| clear（删帧，默认只删临时取帧、不动 keep/）| list（有哪些、多少字节、哪些是留下的）。看到值得留的画面就 keep，并顺手记一行 ledger 的 frame 表；用完的临时帧 clear 收掉。',
+    parameters: {
+      action: str('keep | clear | list', true),
+      bvid: str('keep 时必填：哪条视频的画面'),
+      at: { type: 'array', items: { type: 'number' }, description: 'keep 时要留的秒（相对该 P 的起点）' },
+      p: { type: 'integer', description: '哪个分 P（不给就按秒自动选，没给秒就取 P1）' },
+      reason: str('keep 时写一句为什么值得留（出现在返回值里，方便落账）'),
+      scope: str('clear 删哪一类：temp（默认，不动留下的帧）| keep | all'),
+      olderThanDays: { type: 'integer', description: 'clear 只删早于这么多天生成的文件（默认不限）' },
+      keepLast: { type: 'integer', description: 'clear 时至少保住最近这么多个文件不动（默认 0 = 按条件清干净）' },
+    },
+    output: { schema: { type: 'object', properties: {}, additionalProperties: true }, render: (_a, v) => __renderWithImages(v) },
+    execute: async (args, exec) => {
+      try {
+        const act = String(args?.action || '').trim().toLowerCase()
+        if (act === 'list') return listFrames(framesDir)
+        if (act === 'clear') return clearFrames(framesDir, { scope: args?.scope || 'temp', olderThanDays: args?.olderThanDays, keepLast: args?.keepLast })
+        if (act !== 'keep') return { ok: false, message: `action 只认 keep / clear / list，收到的是「${args?.action}」` }
+        if (!args?.bvid) return { ok: false, message: 'keep 要 bvid（哪条视频的画面）' }
+        const r = await shoot({ call, log, framesDir, UA, REFERER, timeoutMs: cfg.requestTimeoutMs }, args)
+        if (!r.ok || !(r.frames || []).length) return { ok: false, message: `留帧没成功：${r.message || '一格都没裁出来'}`, detail: r }
+        fs.mkdirSync(path.join(framesDir, 'keep'), { recursive: true })
+        const kept = []
+        for (const f of r.frames) {
+          const to = path.join(framesDir, frameFileName(String(args.bvid), f.p, f.tile, f.at, 'jpg', true))
+          fs.copyFileSync(f.path, to)
+          kept.push({ ...f, file: `keep/${path.basename(to)}`, path: to, kept: true })
+        }
+        const imgs = kept.map((f) => ({ buffer: fs.readFileSync(f.path), mediaType: 'image/jpeg' }))
+        const a = await __attachImages((k) => ctx.get?.(k), exec, imgs)
+        return {
+          ok: true, bvid: String(args.bvid), p: r.partIndex, part: r.part, partDuration: r.partDuration, partStart: r.partStart,
+          intervalSec: r.intervalSec, intervalBasis: r.intervalBasis, grid: r.grid, kept,
+          ...(a.ok ? { image_attached: true, images: a.refs } : { image_attached: false, image_skip_reason: a.reason, hint: a.hint }),
+          note: `已裁成单独一帧存在 frames/keep/（${kept.length} 张，framesClear 默认不碰）。${args.reason ? `理由：${args.reason}。` : ''}` +
+            '要长期记得为什么留：bili_ledger {action:"append", table:"frame", key:"file", rows:[{file,bvid,p,at,reason}]}。',
+        }
+      } catch (e) { return { ok: false, message: String(e?.message || e) } }
+    },
+    presentCall: (args) => ({ card: 'generic', title: `bili_frames ${args?.action || ''} ${args?.bvid || ''}`, kind: 'execute', rawInput: `${args?.action || ''} ${args?.bvid || ''}` }),
   })
 
   tool({
@@ -759,7 +764,7 @@ export function apply(ctx, config = {}) {
   const footerFor = (candidateName) => {
     const cred = readCred()
     return '\n\n## 本插件的底座（dsh-bili-base v' + liveVersion() + '）\n\n'
-      + '**说明书只是指令，本身不带记忆。** 常驻工具 4 只：`bili_auth`（登录/身份/凭证）、`bili_api`（通用端点，自动 Cookie/CSRF/WBI）、`bili_shot`（取画面帧，落地给人或视觉插件看）、`bili_ledger`（记账：tables/read/append/delete，按 key 去重）。\n\n'
+      + '**说明书只是指令，本身不带记忆。** 常驻工具 5 只：`bili_auth`（登录/身份/凭证）、`bili_api`（通用端点，自动 Cookie/CSRF/WBI）、`bili_shot`（故事板定位 + 从拼图里裁成单独一帧，帧作为图片附件直接回会话）、`bili_frames`（keep/clear/list 管 `frames/`）、`bili_ledger`（记账：tables/read/append/delete，按 key 去重）。'
       + '**记忆在这儿**：家目录 ' + home + '\n'
       + '- 账本 ledger/：' + ledgerIndex() + ' —— 要看内容用 `bili_ledger {action:"read", table:"…", limit:N}`\n'
       + '- 凭证文件：' + (cred?.sessdata ? '在。但“登录与否”要用 `bili_auth {action:"status"}` 现查，这行只说明文件存在' : '不在 —— 先 `bili_auth {action:"start"}` 再 poll，或 `import` 从别处抄一份') + '\n'
