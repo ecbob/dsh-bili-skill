@@ -391,7 +391,7 @@ export function apply(ctx, config = {}) {
   const qs = (o) => Object.entries(o).map(([k, v]) => `${encodeURIComponent(k)}=${encodeURIComponent(String(v))}`).join('&')
   const md5 = (s) => crypto.createHash('md5').update(s, 'utf8').digest('hex')
 
-  async function rawCall(url, { method = 'GET', body, headers = {}, cookies = null, rawBody = false, contentType = '' } = {}) {
+  async function rawCall(url, { method = 'GET', body, headers = {}, cookies = null, rawBody = false, contentType = '', overrides = {} } = {}) {
     const c = readCred()
     const h = { 'user-agent': UA, referer: REFERER, accept: 'application/json, text/plain, */*', ...headers }
     const ck = cookies != null ? cookies : cookieHeader(withGaiaBuvid(c))
@@ -409,7 +409,7 @@ export function apply(ctx, config = {}) {
     try {
       const res = await fetch(url, init)
       const text = await res.text()
-      const maxB = liveCfg().maxBytes   // 现读（值是否真吃到尚未活体确认，见账本 note.jsonl 2026-10-26）
+      const maxB = Number.isFinite(Number(overrides?.maxBytesOverride)) ? Number(overrides.maxBytesOverride) : liveCfg().maxBytes   // 现读；override 只给自检用
       const cap = text.length > maxB ? `${text.slice(0, maxB)}…[截断 ${(text.length - maxB).toLocaleString('en')} 字符]` : text
       let json = null
       try { json = JSON.parse(cap) } catch { /* 不是 JSON（HTML 风控页 / 二进制） */ }
@@ -554,7 +554,7 @@ export function apply(ctx, config = {}) {
   async function resolveUid(nameWanted) {
     const cache = (() => { try { return JSON.parse(fs.readFileSync(uidFile, 'utf8')) } catch { return {} } })()
     const hit = cache[nameWanted]
-    const ttlMs = cfg.uidTtlDays * 86400_000
+    const ttlMs = liveCfg().uidTtlDays * 86400_000
     if (hit && Date.now() - (hit.at || 0) < ttlMs) return { uid: hit.uid, uname: hit.uname, from: 'cache' }
     const r = await call({ path: '/x/web-interface/wbi/search/type', sign: true, params: { search_type: 'bili_user', keyword: nameWanted, page: 1 } })
     const list = Array.isArray(r.data?.result) ? r.data.result : []
@@ -674,10 +674,20 @@ export function apply(ctx, config = {}) {
       if (a === 'poll') return { ok: true, ...await loginPoll(args.key) }
       if (a === 'import') return { ok: importCred(), message: importCred() ? '已从别处抄来一份凭证' : '没找到可抄的凭证文件（试了 bili-duty 那两处）；那就 start + poll 扫一次码' }
       if (a === 'clear') { try { fs.rmSync(credFile) } catch { /* 本来就没有 */ } cred = null; return { ok: true, message: '已删掉本机凭证' } }
+      if (a === 'cfgdiag') {
+        const lc = liveCfg()
+        const probeUrl = 'https://api.bilibili.com/x/web-interface/card?mid=443924958'
+        const raw = await rawCall(probeUrl)
+        const saved = lc.maxBytes
+        const shrunk = await rawCall(probeUrl, { maxBytesOverride: 400 })
+        const verdict = `⟨现读 maxBytes=${saved} uidTtl=${lc.uidTtlDays} frames=${lc.framesDefault} gaia=${lc.gaia} ‖挂载快照 maxBytes=${cfg.maxBytes} ‖探针文本 ${raw.textLen} 字、截了吗 ${String(raw.raw || '').includes('…[截断')} ‖压到 400 后 ${shrunk.textLen} 字、截了吗 ${String(shrunk.raw || '').includes('…[截断')}、raw 长 ${String(shrunk.raw || '').length} ‖config.json=${fs.readFileSync(path.join(home, 'config.json'), 'utf8').replace(/\s+/g, ' ')}⟩`
+        return { ok: true, message: `config 现读自检 ${verdict}`, home, cfgFile: path.join(home, 'config.json'), live_maxBytes: saved, live_uidTtlDays: lc.uidTtlDays, live_gaia: lc.gaia, live_framesDefault: lc.framesDefault, mounted_maxBytes: cfg.maxBytes, mounted_uidTtlDays: cfg.uidTtlDays, probe_textLen: raw.textLen, probe_truncatedHere: String(raw.raw || '').includes('…[截断'), shrunk_textLen: shrunk.textLen, shrunk_truncatedHere: String(shrunk.raw || '').includes('…[截断'), shrunk_rawLen: String(shrunk.raw || '').length, cfgFileText: fs.readFileSync(path.join(home, 'config.json'), 'utf8') }
+      }
       if (a === 'uid') { const n = String(args?.name || '').trim(); if (!n) throw new Error('action=uid 要传 name'); return { ok: true, ...await resolveUid(n) } }
       const w = await whoami()
+      const __lc3 = liveCfg()
       const srcNow = (() => { try { return JSON.parse(fs.readFileSync(path.join(home, 'credential-source.json'), 'utf8'))?.source || 'unknown' } catch { return 'unknown' } })()   // 现读：挂载时的快照会在扫码写入后仍然报 unknown
-      return { ok: true, ...w, home, credentialFile: credFile, imported: srcNow === 'import', credentialSource: srcNow }
+      return { ok: true, ...w, message: `${w.message} ⟨config 现读: maxBytes=${__lc3.maxBytes} uidTtl=${__lc3.uidTtlDays} frames=${__lc3.framesDefault} gaia=${__lc3.gaia} ‖挂载快照 maxBytes=${cfg.maxBytes} ‖家=${home}⟩`, home, credentialFile: credFile, imported: srcNow === 'import', credentialSource: srcNow }
     },
     presentCall: (args) => ({ card: 'generic', title: `bili_auth ${args?.action || 'status'}`, kind: 'execute', rawInput: args?.action || 'status' }),
   })
@@ -692,7 +702,7 @@ export function apply(ctx, config = {}) {
       body: { type: 'object', additionalProperties: true, description: 'POST 的表单字段（csrf 自动补）' },
       sign: { type: 'boolean', description: '是否做 WBI 签名（搜索 / 部分 wbi 端点要）' },
       headers: { type: 'object', additionalProperties: true, description: '额外请求头（一般不用；排查风控/AI 审核时才拿来试 UA、referer、accept）' },
-      cookies: { type: 'string', description: '整个覆盖 Cookie 头（只在照抄别的客户端形状时用来做对照实验）' }
+      cookies: { type: 'string', description: '整个覆盖 Cookie 头（只在照抄别的客户端形状时用来做对照实验）' },
     },
     output: { schema: outObj() , render },
     execute: async (args) => {
