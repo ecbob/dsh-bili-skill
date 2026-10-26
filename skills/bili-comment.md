@@ -44,7 +44,7 @@ GET /x/v2/reply/main   params:{type:1, oid:<aid>, mode:3, next:<页码>}
 ## 发完
 
 ```
-bili_ledger {action:"append", table:"comment", key:"rpid", rows:[{rpid,bvid,aid,body,at_name:"<被@的昵称>",uid:<被@的UID或0>}]
+bili_ledger {action:"append", table:"comment", key:"rpid", rows:[{rpid,bvid,aid,body,at_name:"<被@的昵称>",uid:<被@的UID或0>}]]}`
 ```
 `data.rpid` 就在回执里，**必须记**。之后复核：用上面的读评论端点翻一层，看这条 rpid 在不在 —— 在就写「公开可见」，不在就写「**没查到**」（翻页/热度排序都会漏），**绝不写"没发出去"**。
 
@@ -63,7 +63,7 @@ bili_ledger {action:"append", table:"comment", key:"rpid", rows:[{rpid,bvid,aid,
 结论与口径：
 - **`Referer` 一律写成 `https://www.bilibili.com`（不带斜杠）**，别自己加 `/`、也别塞完整视频页地址当 referer 去"更像浏览器"。
 - 回执里的 `state`/`attr` **别当结论**（带斜杠那阵子是：回执 `state:0`、读回来 17）；要用 `reply/reply?root=<自己的 rpid>` 读回来核对（读法见 `bili-comment-reply`）。判据：`state:0 attr:0` = 正常；`state:17 attr:6422528` = 被标记/只自己可见；读不到且回它回 12022 = 已被删。
-- **Gaia 指纹上报（`finger/spi` → `internal/gaia-gateway/ExClimbWuzhi` → 改用现取的 buvid）默认是关的。** 本机做过干净的 2×2：上报开 × referer 带斜杠 → 被标记；上报开 × 不带斜杠 → 干净；上报关 × 带斜杠 → 被标记；上报关 × 不带斜杠 → 干净。**只有 Referer 起作用，上报开不开没有任何差别** ⇒ 为了少两次网络往返把它关掉，`config` 里写 `gaia: true` 可以打开（参考实现每次都做它，本机没验出收益）。**但关着不等于不能自愈**：任何一次请求撞上 `-412` / `-352`、或 `code:0` 却只回 `v_voucher` 时，底座会自动现取 spi、上报一次、再把原请求**重试一次**（只一次，不循环；日志里会写「撞风控…重试」）（参考实现每次都做它，理论上能少挨 `-412`/`v_voucher`，但本机没验出收益）。
+- **Gaia 指纹上报（`finger/spi` → `ExClimbWuzhi` → 改用现取的 buvid）默认关**：本机做过干净的 2×2（上报开/关 × Referer 带/不带斜杠）—— 只有 Referer 起作用，上报开不开没差别 ⇒ 为省两次往返默认关掉，`config` 里 `gaia: true` 可打开。**但关着不等于不能自愈**：任何请求撞 `-412` / `-352`、或 `code:0` 却只回 `v_voucher`，底座会自动现取 spi、上报一次、再把原请求重试一次（只一次，不循环，日志写「撞风控…重试」）。
 - 发出去被标记了也别急着改内容重发：**先查 Referer**，再看是不是新号本来就低信任；连着重发只会让号更容易进风控。
 
 ## 删自己发的评论（本机已实测）
