@@ -50,7 +50,7 @@ let risk = null   // 形如 { left: 1, code: -412 } 或 { left: 1, voucher: true
 globalThis.fetch = async (url, init = {}) => {
   const u = String(url)
   hits.push({ url: u, method: (init.method || 'GET'), headers: { ...(init.headers || {}) }, body: init.body ? String(init.body) : '' })
-  let data = { isLogin: true, mid: 443924958, uname: 'tester', level_info: { current_level: 2, current_min: 0, current_exp: 0, next_exp: 0 }, vipStatus: 0, vipType: 1, wbi_img: { img_url: 'https://i0.hdslb.com/bfs/wbi/7cd08494133a4351bb2a2cb38190f56f.png', sub_url: 'https://i0.hdslb.com/bfs/wbi/4932caf07c6049e4b7e523aa1db8ea06.png' } }
+  let data = { isLogin: true, mid: 12345678, uname: 'tester', level_info: { current_level: 2, current_min: 0, current_exp: 0, next_exp: 0 }, vipStatus: 0, vipType: 1, wbi_img: { img_url: 'https://i0.hdslb.com/bfs/wbi/7cd08494133a4351bb2a2cb38190f56f.png', sub_url: 'https://i0.hdslb.com/bfs/wbi/4932caf07c6049e4b7e523aa1db8ea06.png' } }
   let code = 0
   if (u.includes('/x/frontend/finger/spi')) data = { b_3: SPI_B3, b_4: SPI_B4 }
   else if (u.includes('/x/v2/reply/add')) {
@@ -400,7 +400,7 @@ ok('bili_shot 不给 bvid 回 ok:false 而不是抛', noBvid.ok === false && typ
 let threw = false; try { await a.tools.find((t) => t.name === 'bili_auth').execute({ action: 'poll' }) } catch { threw = true }
 ok('poll 不给 key 就明确报错（不闷声发请求）', threw)
 const st = await a.tools.find((t) => t.name === 'bili_auth').execute({ action: 'status' })
-ok('bili_auth status 走假 fetch 认成已登录', st.ok === true && st.loggedIn === true && st.uid === '443924958', JSON.stringify(st))
+ok('bili_auth status 走假 fetch 认成已登录', st.ok === true && st.loggedIn === true && st.uid === '12345678', JSON.stringify(st))
 ok('status 的 level 是真账号等级（level_info.current_level），vipStatus 另走 vip_status 字段 —— 先前把 vipStatus 当 level 回', st.level === 2 && st.vip_status === 0, JSON.stringify({ level: st.level, vip_status: st.vip_status }))
 
 /* ── 16. 撞风控时自动现取 spi 上报并重试一次（gaia 默认关着也要能自愈）── */

@@ -699,7 +699,7 @@ export function apply(ctx, config = {}) {
       if (a === 'clear') { try { fs.rmSync(credFile) } catch { /* 本来就没有 */ } cred = null; return { ok: true, message: '已删掉本机凭证' } }
       if (a === 'cfgdiag') {
         const lc = liveCfg()
-        const probeUrl = 'https://api.bilibili.com/x/web-interface/card?mid=443924958'
+        const probeUrl = 'https://api.bilibili.com/x/web-interface/card?mid=2'   // 拿一个常年存在的公共账号当截断探针（别写死使用者自己的 UID）
         const raw = await rawCall(probeUrl)
         const saved = lc.maxBytes
         return { ok: true, message: `config 现读自检 ⟨config.json=${fs.readFileSync(path.join(home, 'config.json'), 'utf8').replace(/\s+/g, ' ')} → 现读 maxBytes=${saved}（挂载快照 ${cfg.maxBytes}）｜探针：文本 ${raw.textLen} 字、实际用的上限 ${raw.capUsed}、截了吗 ${raw.capUsed < raw.textLen}⟩`, home, cfgFile: path.join(home, 'config.json'), live_maxBytes: saved, live_uidTtlDays: lc.uidTtlDays, mounted_maxBytes: cfg.maxBytes, probe_textLen: raw.textLen, probe_capUsed: raw.capUsed, probe_truncated: raw.capUsed < raw.textLen, cfgFileText: fs.readFileSync(path.join(home, 'config.json'), 'utf8') }
